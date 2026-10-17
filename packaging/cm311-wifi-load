@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+case $(uname -r) in
+    6.18.*) ;;
+    *) echo 'CM311 Wi-Fi supports the tested Linux 6.18 family; build for this kernel first.' >&2; exit 1 ;;
+esac
+if [[ -d /sys/module/sprdwl_ng ]]; then
+    if [[ -L /sys/bus/platform/drivers/unisoc_wifi/unisoc_wifi ]]; then
+        echo 'Wi-Fi platform driver is already bound.'
+        exit 0
+    fi
+    echo 'Wi-Fi was already probed but is not bound; collect logs before a normal reboot.' >&2
+    exit 1
+fi
+if [[ -d /sys/module/uwe5621_bsp_sdio ]]; then
+    echo 'An existing transport is loaded without Wi-Fi; refusing to probe it again automatically.' >&2
+    exit 1
+fi
+card_ready=false
+for ((attempt = 0; attempt < 25; attempt++)); do
+    for device in /sys/bus/sdio/devices/*; do
+        if [[ -r $device/uevent ]] &&
+           grep -q '^OF_COMPATIBLE_0=sprd,unisoc-wifi$' "$device/uevent" &&
+           grep -q '^SDIO_ID=0000:0000$' "$device/uevent"; then
+            card_ready=true
+            break
+        fi
+    done
+    if [[ $card_ready == true ]]; then
+        break
+    fi
+    sleep 0.2
+done
+if [[ $card_ready != true ]]; then
+    echo 'Expected CM311 SDIO device did not appear within five seconds; inspect the DTB and kernel log.' >&2
+    exit 1
+fi
+modprobe cfg80211
+modprobe uwe5621_bsp_sdio
+modprobe sprdwl_ng
+if [[ ! -L /sys/bus/platform/drivers/unisoc_wifi/unisoc_wifi ]]; then
+    echo 'Wi-Fi probe did not bind; inspect journalctl -u cm311-wifi -b and dmesg.' >&2
+    exit 1
+fi
+echo 'CM311 Wi-Fi platform bound. NetworkManager manages the connection.'

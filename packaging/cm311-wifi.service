@@ -1,0 +1,17 @@
+[Unit]
+Description=CM311-1a YST UWE5621DS Wi-Fi
+After=local-fs.target systemd-udev-trigger.service
+Before=NetworkManager.service
+ConditionPathExists=/lib/firmware/uwe5621ds/wcnmodem.bin
+ConditionPathExists=/lib/firmware/uwe5621ds/wifi_56630001_3ant.ini
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/cm311-wifi-load
+RemainAfterExit=yes
+TimeoutStartSec=45
+# No automatic retries or module unload: preserve a failed probe for diagnosis.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

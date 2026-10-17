@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      kernel_release:
+        description: 'Optional custom release; supply all three kernel fields together'
+        type: string
+      kernel_url:
+        description: 'HTTPS URL for matching prepared ophub headers (standalone or kernel bundle)'
+        type: string
+      kernel_sha256:
+        description: 'SHA-256 of the downloaded archive'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential python3 git kmod shellcheck golang-go
+      - name: Validate workflow syntax
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/*.yml
+      - name: Check scripts
+        run: bash scripts/check.sh
+      - name: Regression tests
+        run: |
+          mkdir -p dist
+          bash scripts/run-tests.sh 2>&1 | tee dist/tests.log
+      - name: Package source and integration update
+        run: |
+          python3 scripts/package.py --kind source
+          python3 scripts/package.py --kind integration
+      - name: Upload source and test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source-and-tests
+          path: |
+            dist/*-source.tar.gz*
+            dist/*-integration.tar.gz*
+            dist/tests.log
+          if-no-files-found: error
+          retention-days: 14
+
+  arm64-build:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI_KERNEL_RELEASE: ${{ inputs.kernel_release }}
+      CI_KERNEL_URL: ${{ inputs.kernel_url }}
+      CI_KERNEL_SHA256: ${{ inputs.kernel_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential python3 git curl xz-utils kmod
+      - name: Fetch checksum-pinned compiler
+        run: bash scripts/fetch-toolchain.sh
+      - name: Prepare verified headers and native host tools
+        run: python3 ci/prepare-headers.py
+      - name: Cross-compile both ARM64 modules
+        run: |
+          export CROSS_COMPILE="$PWD/.cache/toolchain/bin/aarch64-none-linux-gnu-"
+          JOBS=2 bash scripts/build.sh
+      - name: Package matching modules with corresponding source
+        run: python3 scripts/package.py --kind modules --kernel-release "$KERNEL_RELEASE"
+      - name: Upload kernel-specific build and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: arm64-modules-${{ env.KERNEL_RELEASE || 'unprepared' }}
+          path: |
+            dist/*-6.18*.tar.gz*
+            dist/*/build.log
+          if-no-files-found: warn
+          retention-days: 14
