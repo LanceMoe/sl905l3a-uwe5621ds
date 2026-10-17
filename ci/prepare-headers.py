@@ -93,6 +93,9 @@ def main():
     if env_file := os.environ.get('GITHUB_ENV'):
         with Path(env_file).open('a') as stream:
             stream.write(f'KDIR={area}\nKERNEL_RELEASE={release}\n')
+    if output_file := os.environ.get('GITHUB_OUTPUT'):
+        with Path(output_file).open('a') as stream:
+            stream.write(f'kernel_release={release}\n')
     print(f'KERNEL_RELEASE={release}\nKDIR={area}')
 
 

@@ -3,6 +3,73 @@
 交付版本 0.8.0，沿用已实测的 v8 驱动补丁。本次交付增加安装/回退和 CI，没有修改驱动行为。
 支持目标为 CM311-1a YST / UWE5621DS / ARM64 / Linux 6.18，实机验证内核为 `6.18.37-ophub`。
 
+## 二进制包安装（无需编译）
+
+打开 [GitHub Releases](https://github.com/LanceMoe/sl905l3a-uwe5621ds/releases)，先在盒子上执行：
+
+```bash
+uname -m
+uname -r
+```
+
+只下载文件名与 `uname -r` **完全一致**的 ARM64 包，例如
+`cm311-uwe5621ds-0.8.0-6.18.56-ophub.tar.gz` 只能装到 `6.18.56-ophub`。
+不能把同一 6.18 大版本下其他补丁版本的模块混用。
+
+| 附件 | 选择方式 |
+| --- | --- |
+| `cm311-uwe5621ds-<版本>-<完整内核版本>.tar.gz` | 二进制模块、对应源码及安装/回退工具；无需编译 |
+| 同名 `.tar.gz.sha256` | 下载后先校验这个文件 |
+| `*-source.tar.gz` | 源码包；没有当前内核的二进制时用于本机构建 |
+| `*-integration.tar.gz` | 给已有且已测试 v8 模块的目录补齐系统集成工具；它不包含二进制 |
+
+默认 CI 当前只为 `6.18.56-ophub` 构建二进制。**你的 `6.18.37-ophub` 盒子应继续使用下一节的
+“已构建 v8”集成更新方式**，直到 Release 明确提供 `6.18.37-ophub` 包。
+没有匹配附件时，不为安装驱动而强行升级内核，也不要改 vermagic 或使用强制加载参数。
+
+二进制安装仅需要 Python 3、kmod、bash、tar、curl、iw 和 systemd，已有 Armbian 通常已具备。
+缺少时安装这些运行工具即可，无需 GCC、make 或内核头文件：
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends python3 kmod bash tar curl iw
+```
+
+仍须保留系统已有的 `/lib/firmware/uwe5621ds` 固件。下面示例按当前内核选择附件，
+若 Release 不提供该内核，下载会失败并在安装前停止。版本号按所选 Release 修改：
+
+```bash
+bash <<'SH'
+set -euo pipefail
+version=0.8.0
+repo=LanceMoe/sl905l3a-uwe5621ds
+kernel=$(uname -r)
+if [[ $(uname -m) != aarch64 ]]; then
+    echo '二进制包仅用于 ARM64 盒子。' >&2
+    exit 1
+fi
+file="cm311-uwe5621ds-${version}-${kernel}.tar.gz"
+base="https://github.com/${repo}/releases/download/v${version}"
+work=$(mktemp -d "$HOME/cm311-binary.XXXXXX")
+cd "$work"
+curl --fail --location --retry 3 "$base/$file" --output "$file"
+curl --fail --location --retry 3 "$base/$file.sha256" --output "$file.sha256"
+sha256sum --check "$file.sha256"
+tar -xzf "$file"
+cd cm311-uwe5621ds
+sudo bash scripts/install.sh
+printf '已安装；项目及卸载工具保留在：%s\n' "$PWD"
+SH
+```
+
+安装器会再次校验模块哈希、真实 ARM64 vermagic 与目标内核、对应源码标记及已有固件。
+它写入模块与开机服务，不重新编译，也不立即重载或重启。
+网络连接持久化、重启验证和卸载步骤见下文。下载目录保留，回退时可在其中运行
+`sudo bash scripts/uninstall.sh`。SHA-256 用于检查下载文件完整性，仍应从可信 Release 下载。
+
+也可通过浏览器把匹配的 tar.gz 与同名 sha256 文件复制到盒子，在同目录手动执行
+`sha256sum -c 文件名.tar.gz.sha256`，校验成功后解包、进入目录并运行安装器。
+
 ## 已经构建并测试过 v8 的盒子
 
 现有盒子无需为安装工具重新编译。将 `cm311-uwe5621ds-0.8.0-integration.tar.gz`

@@ -1,7 +1,9 @@
 # CI 与发行
 
 工作流为 `.github/workflows/ci.yml`，需要将文件提交、推送到 GitHub 后才会执行。
-没有自动推送、自动创建 GitHub Release 或发送消息的步骤。
+普通分支推送、PR 和手动运行只检查、构建及保存 Actions 产物。
+**推送与 VERSION 一致的版本标签会在 CI 成功后自动创建并公开 GitHub Release。**
+工作流不会自行提交代码、推送标签或发送消息。
 
 ## 自动运行
 
@@ -25,7 +27,8 @@ CI 成功不代表已验证真实 SDIO 硬件、启动顺序或无线链路质�
 只重建 x86_64 主机执行的 fixdep/modpost，不修改 ARM64 的 elfconfig、设备表偏移或符号版本表。
 上游删除该固定归档时工作流会失败，需要维护者明确更新版本与 SHA，不静默切换到最新版。
 
-GitHub Actions 使用固定提交 SHA，权限为 `contents: read`，checkout 不保留凭据。
+GitHub Actions 使用固定提交 SHA，检查/构建权限为 `contents: read`，checkout 不保留凭据。
+仅标签发布任务有 `contents: write`，仅其最后一步接收 GH_TOKEN。
 PR 使用 `pull_request`，不会以 `pull_request_target` 执行提交的代码。
 工作流输入通过环境变量交给 Python 校验，不插入 Shell 源码。
 
@@ -37,13 +40,74 @@ PR 使用 `pull_request`，不会以 `pull_request_target` 执行提交的代码
 - `kernel_url`：有使用权且可信的 HTTPS 头文件归档 URL，需含精确的生成头文件和 Module.symvers。
 - `kernel_sha256`：下载文件的 SHA-256。
 
-三个都留空时使用固定默认值；仅填写一部分会拒绝构建。
+工作流输入优先于同名仓库变量。三项都未提供且没有仓库变量时，使用固定默认值；
+最终解析出的三项必须完整成组，否则拒绝构建。
 支持根目录就是准备好的头文件树的归档，或内含 `header-<内核版本>.tar.gz` 的 ophub 内核归档。
 不能用别的内核的头文件后仅修改版本字符串。
 
 Actions 页面下载 `source-and-tests` 或 `arm64-modules-<内核版本>` 产物。
 平台下载的外层 zip 内才是项目 tar.gz 和 sha256 文件。
 只安装与盒子运行内核一致的模块包；source 包可用于盒子本机重新构建。
+
+## 自动创建 Release
+
+将所有项目和工作流文件提交、推送后，再推送版本标签：
+
+```bash
+git tag v0.8.0
+git push origin v0.8.0
+```
+
+`v0.8.0` 必须与 `VERSION` 中的 `0.8.0` 一致，否则检查阶段就会失败。
+之后自动运行完整检查和 ARM64 编译，再从**本次运行**下载源码/集成包和内核二进制包：
+
+1. 验证每个外层归档 SHA-256、内部逐文件清单及版本/类型/内核身份。
+2. 对实际 `.ko` 运行 modinfo，核对真实 vermagic 和 ARM64 架构，避免附件标错内核。
+3. 生成 `INSTALL.md` 附件、`RELEASE.json`、总 `SHA256SUMS` 和标明支持内核的发布说明。
+4. 创建草稿并上传全部附件，上传成功后自动公开。
+
+首次上传失败会保留可恢复草稿，重新运行该标签 CI 即可继续。
+已公开的同标签 Release 不覆盖附件；需要改变已发布内容时应递增 VERSION 并推送新标签。
+未通过检查、编译或附件校验时不公开 Release。只有版本标签 push 能执行发布，PR 和手动构建不能发布。
+仓库无需额外 PAT，使用 GitHub 提供给该发布任务的 GITHUB_TOKEN；需允许 Actions 使用 contents 写权限。
+
+Release 附件包括：
+
+- 源码 tar.gz、集成更新 tar.gz、明确内核版本的二进制 tar.gz。
+- 每个 tar.gz 的独立 `.sha256`，以及汇总 `SHA256SUMS`。
+- 可直接阅读的 `INSTALL.md` 和包含可用二进制内核/源提交的 `RELEASE.json`。
+
+模块包本身包含对应源码。Release 说明会明确列出实际构建内核，
+不会把 `6.18.56-ophub` 二进制描述为适用于实机 `6.18.37-ophub`。
+
+### 让自动 Release 构建实机 6.18.37 的二进制
+
+目前固定上游下载配置只提供已校验的 6.18.56 构建输入。
+要发布 6.18.37 二进制，须提供这台盒子精确的、已准备的头文件与 Module.symvers，不能拿其他版本替代。
+可在盒子上打包，不会加载驱动或重启：
+
+```bash
+kernel=$(uname -r)
+headers=$(readlink -f "/lib/modules/$kernel/build")
+tar -C "$headers" -czf "/root/header-$kernel.tar.gz" .
+sha256sum "/root/header-$kernel.tar.gz"
+```
+
+把该归档放到可信且 CI 可直接 HTTPS 下载的位置，然后在仓库 Settings → Secrets and variables →
+Actions → Variables 设置三项非秘密变量：
+
+| 变量 | 示例 |
+| --- | --- |
+| `CI_KERNEL_RELEASE` | `6.18.37-ophub` |
+| `CI_KERNEL_URL` | 精确头文件归档的 HTTPS URL |
+| `CI_KERNEL_SHA256` | 上一步归档的 SHA-256 |
+
+或直接在 `ci/kernel.json` 中更新对应的 release/url/sha256 并提交。
+**在推送版本标签前配置好**，标签自动构建与 Release 会使用该输入，并按实际内核命名附件。
+若当前版本已发布，先更新 VERSION，使用新标签发布；不要移动或覆盖旧标签。
+
+没有 6.18.37 头文件时，你现有的已构建 v8 模块仍可通过集成更新包安装。
+这份工作流不会生成冒用 6.18.37 版本字符串的预编译模块。
 
 ## 本地复现
 
@@ -82,4 +146,6 @@ python3 scripts/package.py --kind modules --kernel-release 6.18.56-ophub
 
 参考：[GitHub 工作流语法](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)、
 [工作流产物](https://docs.github.com/en/actions/tutorials/store-and-share-data)、
+[gh release create](https://cli.github.com/manual/gh_release_create)、
+[gh release upload](https://cli.github.com/manual/gh_release_upload)、
 [ophub 内核发布](https://github.com/ophub/kernel/releases/tag/kernel_stable)。

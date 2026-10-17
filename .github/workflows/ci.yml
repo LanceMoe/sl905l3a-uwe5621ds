@@ -38,6 +38,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential python3 git kmod shellcheck golang-go
+      - name: Validate version tag before building a release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/release.py validate-tag --tag "$RELEASE_TAG"
       - name: Validate workflow syntax
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/*.yml
       - name: Check scripts
@@ -66,10 +71,12 @@ jobs:
     needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      kernel_release: ${{ steps.headers.outputs.kernel_release }}
     env:
-      CI_KERNEL_RELEASE: ${{ inputs.kernel_release }}
-      CI_KERNEL_URL: ${{ inputs.kernel_url }}
-      CI_KERNEL_SHA256: ${{ inputs.kernel_sha256 }}
+      CI_KERNEL_RELEASE: ${{ inputs.kernel_release || vars.CI_KERNEL_RELEASE }}
+      CI_KERNEL_URL: ${{ inputs.kernel_url || vars.CI_KERNEL_URL }}
+      CI_KERNEL_SHA256: ${{ inputs.kernel_sha256 || vars.CI_KERNEL_SHA256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -81,6 +88,7 @@ jobs:
       - name: Fetch checksum-pinned compiler
         run: bash scripts/fetch-toolchain.sh
       - name: Prepare verified headers and native host tools
+        id: headers
         run: python3 ci/prepare-headers.py
       - name: Cross-compile both ARM64 modules
         run: |
@@ -98,3 +106,41 @@ jobs:
             dist/*/build.log
           if-no-files-found: warn
           retention-days: 14
+
+  publish-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [checks, arm64-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install release validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 kmod gh
+      - name: Download source artifacts from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: source-and-tests
+          path: release-input/source
+      - name: Download matching binary artifacts from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: arm64-modules-${{ needs.arm64-build.outputs.kernel_release }}
+          path: release-input/modules
+      - name: Verify artifacts and generate binary-aware release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          BINARY_KERNEL: ${{ needs.arm64-build.outputs.kernel_release }}
+        run: |
+          python3 scripts/release.py prepare --tag "$RELEASE_TAG" \
+            --kernel-release "$BINARY_KERNEL" --inputs release-input --output release-assets
+      - name: Create and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/release.py publish --tag "$RELEASE_TAG" --output release-assets
