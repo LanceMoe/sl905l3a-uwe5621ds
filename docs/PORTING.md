@@ -395,7 +395,6 @@ ping -I wlan0 -c 4 -W 2 -M do -s 1472 1.1.1.1
 与驱动日志判断失败原因。绑定接口用于避免通过仍在使用的 eth0 得出 Wi-Fi 联网成功的结论。
 如果连接或数据测试失败，保留命令输出，在同目录执行 `bash scripts/diagnose.sh --snapshot`，
 发回现有状态诊断包。
-
 `nmcli` 用法参考 [NetworkManager 官方手册](https://networkmanager.dev/docs/api/latest/nmcli.html)。
 
 后续实机反馈已确认关联 2.4 GHz AP、获得 IPv4 地址，绑定 wlan0 的 4 次普通 ping

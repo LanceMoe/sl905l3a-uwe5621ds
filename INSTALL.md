@@ -1,42 +1,50 @@
-# 系统集成
+# 安装与系统集成说明
 
-交付版本 0.8.0，沿用已实测的 v8 驱动补丁。本次交付增加安装/回退和 CI，没有修改驱动行为。
-支持目标为 CM311-1a YST / UWE5621DS / ARM64 / Linux 6.18，实机验证内核为 `6.18.37-ophub`。
+本文档详细说明如何将 CM311-1a YST（S905L3A）的 UWE5621DS Wi-Fi 驱动（版本 **0.8.0**，驱动补丁 **v8**）安装到盒子系统中、配置开机自动加载与卸载回退，以及集成到离线 Armbian 镜像。
+
+若需查看从编译到连接 Wi-Fi 的快速上手流程，请先阅读 **[README.md](README.md)**。
+
+---
+
+## 目录
+
+1. [二进制包安装（无需编译）](#二进制包安装无需编译)
+2. [从源码编译并安装](#从源码编译并安装)
+3. [已有 v8 构建目录的集成更新](#已有-v8-构建目录的集成更新)
+4. [安装位置与开机自启机制](#安装位置与开机自启机制)
+5. [NetworkManager 自动连接与开机验证](#networkmanager-自动连接与开机验证)
+6. [卸载与回退](#卸载与回退)
+7. [内核升级说明](#内核升级说明)
+8. [集成到离线 Armbian 根文件系统](#集成到离线-armbian-根文件系统)
+
+---
 
 ## 二进制包安装（无需编译）
 
-打开 [GitHub Releases](https://github.com/LanceMoe/sl905l3a-uwe5621ds/releases)，先在盒子上执行：
+打开 [GitHub Releases](https://github.com/LanceMoe/sl905l3a-uwe5621ds/releases)，先在盒子上确认架构与完整内核版本号：
 
 ```bash
-uname -m
-uname -r
+uname -m   # 必须为 aarch64
+uname -r   # 例如 6.18.37-ophub 或 6.18.56-ophub
 ```
 
-只下载文件名与 `uname -r` **完全一致**的 ARM64 包，例如
-`cm311-uwe5621ds-0.8.0-6.18.56-ophub.tar.gz` 只能装到 `6.18.56-ophub`。
-不能把同一 6.18 大版本下其他补丁版本的模块混用。
+> **重要提示**：只下载文件名与 `uname -r` **完全一致**的 ARM64 二进制包。例如 `cm311-uwe5621ds-0.8.0-6.18.56-ophub.tar.gz` 只能安装到 `6.18.56-ophub`，**不能**用于 `6.18.37-ophub`。同一 `6.18` 大版本下不同小版本的内核模块不可混用，请勿强行修改 `vermagic`。若 Release 中没有你当前内核的二进制包，请使用下一节的**[从源码编译并安装](#从源码编译并安装)**。
 
-| 附件 | 选择方式 |
+| Release 附件名称 | 用途与选择方式 |
 | --- | --- |
-| `cm311-uwe5621ds-<版本>-<完整内核版本>.tar.gz` | 二进制模块、对应源码及安装/回退工具；无需编译 |
-| 同名 `.tar.gz.sha256` | 下载后先校验这个文件 |
-| `*-source.tar.gz` | 源码包；没有当前内核的二进制时用于本机构建 |
-| `*-integration.tar.gz` | 给已有且已测试 v8 模块的目录补齐系统集成工具；它不包含二进制 |
+| `cm311-uwe5621ds-<版本>-<完整内核版本>.tar.gz` | 预编译 `.ko` 模块、对应驱动源码及安装/卸载工具（免编译） |
+| 同名 `.tar.gz.sha256` | 对应压缩包的 SHA-256 校验文件 |
+| `cm311-uwe5621ds-<版本>-source.tar.gz` | 完整源码包（已打好补丁），用于在盒子上针对当前内核编译 |
+| `cm311-uwe5621ds-<版本>-integration.tar.gz` | 仅含安装脚本、服务配置与文档，用于给已有 v8 构建目录补充安装工具 |
 
-默认 CI 当前只为 `6.18.56-ophub` 构建二进制。**你的 `6.18.37-ophub` 盒子应继续使用下一节的
-“已构建 v8”集成更新方式**，直到 Release 明确提供 `6.18.37-ophub` 包。
-没有匹配附件时，不为安装驱动而强行升级内核，也不要改 vermagic 或使用强制加载参数。
-
-二进制安装仅需要 Python 3、kmod、bash、tar、curl、iw 和 systemd，已有 Armbian 通常已具备。
-缺少时安装这些运行工具即可，无需 GCC、make 或内核头文件：
+二进制安装无需 GCC、make 或内核头文件，只需确保系统具备基础运行工具并保留原有的 `/lib/firmware/uwe5621ds` 固件目录：
 
 ```bash
 sudo apt-get update
 sudo apt-get install --no-install-recommends python3 kmod bash tar curl iw
 ```
 
-仍须保留系统已有的 `/lib/firmware/uwe5621ds` 固件。下面示例按当前内核选择附件，
-若 Release 不提供该内核，下载会失败并在安装前停止。版本号按所选 Release 修改：
+当 Release 中有匹配你当前 `uname -r` 的二进制包时，可执行以下脚本自动下载、校验并安装（按需修改 `version`）：
 
 ```bash
 bash <<'SH'
@@ -62,107 +70,96 @@ printf '已安装；项目及卸载工具保留在：%s\n' "$PWD"
 SH
 ```
 
-安装器会再次校验模块哈希、真实 ARM64 vermagic 与目标内核、对应源码标记及已有固件。
-它写入模块与开机服务，不重新编译，也不立即重载或重启。
-网络连接持久化、重启验证和卸载步骤见下文。下载目录保留，回退时可在其中运行
-`sudo bash scripts/uninstall.sh`。SHA-256 用于检查下载文件完整性，仍应从可信 Release 下载。
+也可以在电脑浏览器下载匹配的 `.tar.gz` 和 `.tar.gz.sha256` 上传到盒子，执行 `sha256sum -c *.sha256` 校验通过后解压，进入目录运行 `sudo bash scripts/install.sh`。
 
-也可通过浏览器把匹配的 tar.gz 与同名 sha256 文件复制到盒子，在同目录手动执行
-`sha256sum -c 文件名.tar.gz.sha256`，校验成功后解包、进入目录并运行安装器。
+---
 
-## 已经构建并测试过 v8 的盒子
+## 从源码编译并安装
 
-现有盒子无需为安装工具重新编译。将 `cm311-uwe5621ds-0.8.0-integration.tar.gz`
-放到 `/root`，在此前 v8 项目目录中覆盖更新项目文件：
-
-```bash
-cd /root/cm311-v8/cm311-uwe5621ds
-tar -xzf /root/cm311-uwe5621ds-0.8.0-integration.tar.gz --strip-components=1
-bash scripts/install.sh
-```
-
-归档不包含 `build/`、`.cache/` 或现有 `dist/`，保留此前的模块、工具链和日志。
-安装检查当前内核版本、两个模块的名称/ARM64 vermagic、校验和、以及是否来自当前 v8 补丁。
-校验不通过时先修复或重新构建，不强行修改模块版本字符串。
-
-## 新系统从源码构建
-
-解包 `cm311-uwe5621ds-0.8.0-source.tar.gz` 并进入 `cm311-uwe5621ds`，或克隆本仓库。
-应先按实际设备配置好原有 DTB，保留能联网的有线连接。
+当盒子内核（例如 `6.18.37-ophub`）没有现成的预编译二进制包时，克隆本仓库或解压 `cm311-uwe5621ds-0.8.0-source.tar.gz` 后，在盒子上执行：
 
 ```bash
 sudo apt-get update
 sudo apt-get install --no-install-recommends build-essential git python3 kmod iw curl xz-utils
+
+# 确认当前内核头文件与 Module.symvers 存在
 test -s "/lib/modules/$(uname -r)/build/Module.symvers"
+
+# 下载 Arm GNU 15.3 工具链并编译、安装
 bash scripts/fetch-toolchain.sh
 CROSS_COMPILE="$PWD/.cache/toolchain/bin/aarch64-none-linux-gnu-" bash scripts/build.sh
 sudo bash scripts/install.sh
 ```
 
-复用现有编译器时跳过 fetch，设置此前成功使用的 `CROSS_COMPILE` 前缀。
-头文件须精确匹配运行的 ophub 内核，构建脚本会检查生成的 `UTS_RELEASE`。
-源码包包含固定上游已应用补丁的源码；从 Git 构建则由 `prepare.sh` 获取并应用同一补丁。
+- 如果此前已经下载过 Arm GNU 15.3 工具链，可跳过 `fetch-toolchain.sh`，直接将 `CROSS_COMPILE` 指向已有的 `aarch64-none-linux-gnu-` 路径。
+- 安装前要求系统已存在以下非空固件文件（本项目不分发固件）：
+  - `/lib/firmware/uwe5621ds/wcnmodem.bin`（实测 SHA-256：`008490d209f00603b163dcdf84f0f5041debba157426e08aa3f9ff07210d2695`）
+  - `/lib/firmware/uwe5621ds/wifi_56630001_3ant.ini`
 
-安装要求系统已有以下非空文件，且保留其现有内容：
+---
 
-```text
-/lib/firmware/uwe5621ds/wcnmodem.bin
-/lib/firmware/uwe5621ds/wifi_56630001_3ant.ini
+## 已有 v8 构建目录的集成更新
+
+如果盒子上此前已经编译并测试过 v8 模块（例如位于 `/root/cm311-v8/cm311-uwe5621ds`），无需重新编译，只需用 `integration` 包补齐安装脚本与服务文件即可：
+
+```bash
+cd /root/cm311-v8/cm311-uwe5621ds
+tar -xzf /root/cm311-uwe5621ds-0.8.0-integration.tar.gz --strip-components=1
+sudo bash scripts/install.sh
 ```
 
-实测固件 SHA-256 为
-`008490d209f00603b163dcdf84f0f5041debba157426e08aa3f9ff07210d2695`。
-驱动仍按实际芯片与天线配置选择 INI；不要用 UWE5622 的单天线文件冒充。
-本发行包不携带固件；需要从有使用权的原系统保留该目录。
+`integration` 包不包含 `build/`、`.cache/` 或 `dist/`，因此会完整保留你已编译好的 `.ko` 模块与工具链。
 
-## 安装到哪里、如何开机加载
+---
 
-| 文件 | 用途 |
+## 安装位置与开机自启机制
+
+`sudo bash scripts/install.sh` 会写入并管理以下系统路径：
+
+| 系统路径 | 用途说明 |
 | --- | --- |
-| `/lib/modules/<内核>/updates/cm311/uwe5621_bsp_sdio.ko` | WCN/SDIO 模块 |
-| `/lib/modules/<内核>/updates/cm311/sprdwl_ng.ko` | Wi-Fi 模块 |
-| `/etc/modprobe.d/cm311-wifi.conf` | 日志 WARN、ADDBA 重试 30000 ms |
-| `/usr/local/libexec/cm311-wifi-load` | 检查并按依赖加载模块，确认平台绑定 |
-| `/etc/systemd/system/cm311-wifi.service` | 本地文件系统就绪后、NetworkManager 启动前加载 |
-| `/etc/systemd/system/multi-user.target.wants/cm311-wifi.service` | 开机启用链接 |
-| `/var/lib/cm311-wifi/install.json` | 版本、内核、受管文件哈希及原文件备份索引 |
-| `/var/lib/cm311-wifi/backups/` | 首次安装前同名文件的备份 |
+| `/lib/modules/<内核>/updates/cm311/uwe5621_bsp_sdio.ko` | WCN / SDIO 底层传输模块 |
+| `/lib/modules/<内核>/updates/cm311/sprdwl_ng.ko` | Wi-Fi 无线驱动模块 |
+| `/etc/modprobe.d/cm311-wifi.conf` | 模块参数：日志级别 `WARN` (`log_level=2`)、`tx_addba_retry_ms=30000` |
+| `/usr/local/libexec/cm311-wifi-load` | 开机加载脚本：等待 SDIO 设备就绪、按序 `modprobe` 并验证平台绑定 |
+| `/etc/systemd/system/cm311-wifi.service` | systemd 服务单元（在本地文件系统就绪后、`NetworkManager` 启动前运行） |
+| `/etc/systemd/system/multi-user.target.wants/cm311-wifi.service` | 开机自启符号链接 |
+| `/var/lib/cm311-wifi/install.json` | 安装事务清单（记录版本、内核、受管文件哈希与备份索引） |
+| `/var/lib/cm311-wifi/backups/` | 首次安装前同名原始文件的备份目录 |
 
-安装执行 `depmod` 和 systemd daemon-reload，通过启用链接配置下次开机加载。
-不立即启动服务、不卸载当前模块、不重启、不修改 DTB/内核/固件/网络连接。
-日常日志使用 WARN（`log_level=2`），避免 INFO 级别逐包日志长期刷写存储；
-诊断脚本会按需临时提高日志级别，结束后恢复原级别。
-加载顺序为 `cfg80211` → `uwe5621_bsp_sdio` → `sprdwl_ng`；服务检查平台是否确实绑定，
-不把 modprobe 返回成功直接当作 Wi-Fi 可用。服务超时 45 秒，不自动反复重载失败驱动。
-启动时只读等待预期 SDIO 设备最多五秒，不触发重枚举或重复 probe。
-Wi-Fi 服务失败不会以 Requires 关系阻止 NetworkManager 管理有线网络。
+### 设计说明
 
-不要再给同一模块添加另一份 modules-load.d、rc.local 或自定义加载服务，避免重复入口。
-已有手写启动脚本时应先自行停用该旧入口，再使用这里的服务。
+- **安全安装**：安装过程仅写入文件、执行 `depmod` 和 `systemctl daemon-reload`，**不会**立即卸载/加载当前内核模块，也**不会**自动重启或修改 DTB、固件和网络连接配置。
+- **可靠的开机加载顺序**：下次开机时，`cm311-wifi.service` 先最多只读等待 5 秒确认 `mmc0` 下出现 `sprd,unisoc-wifi` SDIO 卡，随后按顺序加载 `cfg80211` → `uwe5621_bsp_sdio` → `sprdwl_ng`，并检查 `/sys/bus/platform/drivers/unisoc_wifi/unisoc_wifi` 确实完成绑定后才算成功。
+- **不阻塞有线网络**：服务超时设为 45 秒，失败时不反复无限重载，也不会通过强依赖（`Requires`）阻塞 `NetworkManager` 管理有线网卡 `eth0`。
+- **避免重复配置**：请勿再额外配置 `/etc/modules-load.d/`、`rc.local` 或其他自定义加载脚本；如有旧的手写加载脚本请先停用。
 
-## NetworkManager 自动连接
+---
 
-已有保存的连接和密码继续使用，不需要再次输入密码。先查找所需连接的 UUID：
+## NetworkManager 自动连接与开机验证
 
-```bash
-nmcli -f NAME,UUID,TYPE connection show
-```
+### 1. 连接并配置 MTU 1400 与省电关闭
 
-把下面的 `你的连接UUID` 替换为实际值；这些命令只修改指定的 Wi-Fi 配置：
+首次连接 Wi-Fi 可使用：
 
 ```bash
-nmcli connection modify uuid '你的连接UUID' connection.autoconnect yes \
-    802-11-wireless.mtu 1400 802-11-wireless.powersave 2
+sudo nmcli --ask device wifi connect "你的SSID" ifname wlan0
 ```
 
-`powersave 2` 表示关闭 802.11 省电，与已经实测的 off 一致，不代表禁用固件独立休眠。
-驱动本身默认/最大 MTU 也是 1400。首次建立连接可使用：
+查看已保存连接的 UUID，并将该连接的 MTU 固定为 `1400`、关闭 802.11 省电（`powersave 2`）、开启自动连接：
 
 ```bash
-nmcli --ask device wifi connect '你的SSID' ifname wlan0
+nmcli -f NAME,UUID,TYPE,DEVICE connection show
+
+sudo nmcli connection modify uuid "你的连接UUID" \
+    connection.autoconnect yes \
+    802-11-wireless.mtu 1400 \
+    802-11-wireless.powersave 2
 ```
 
-保存配置后，在方便时正常重启一次，验证完整开机路径。安装工具不会替你重启。
+### 2. 重启验证
+
+正常重启盒子后，可通过以下命令确认开机自启与无线通信正常：
 
 ```bash
 systemctl is-enabled cm311-wifi.service
@@ -175,50 +172,51 @@ cat /sys/module/sprdwl_ng/parameters/tx_addba_retry_ms
 ping -I wlan0 -c 4 -W 2 1.1.1.1
 ```
 
-预期服务 active (exited)、模块路径在当前内核的 updates/cm311、参数为 30000。
-`iw link` 成功仅证明关联；地址、绑定 wlan0 的通信和日志应一起确认。
-如开机失败，在项目中 `bash scripts/diagnose.sh --snapshot` 保存现场，不反复重载。
+预期 `cm311-wifi.service` 状态为 `active (exited)`，模块路径位于当前内核的 `updates/cm311/`，`tx_addba_retry_ms` 为 `30000`。若开机加载失败，请运行 `bash scripts/diagnose.sh --snapshot` 保存诊断包。
+
+---
 
 ## 卸载与回退
 
-```bash
-cd /root/cm311-v8/cm311-uwe5621ds
-bash scripts/uninstall.sh
-```
-
-卸载先校验受管文件是否仍与安装记录一致，再恢复首次安装前的原文件或删除原本不存在的文件。
-重装/升级保留第一次备份，不会把当前安装错误地变成回退基线。
-如果用户改过受管文件，脚本拒绝继续并列出冲突；先保存修改、对照备份处理，不使用通配符删除。
-卸载不动固件、NetworkManager 配置或当前加载的模块。正常重启后不再由此服务加载。
-备份保留在 `/var/lib/cm311-wifi/backups`，可按需要另行归档。
-
-不建议在正在用 Wi-Fi 的 SSH 会话里手工 rmmod 这组实验驱动。
-
-## 升级内核
-
-本方案按内核版本安装，**不提供 DKMS 自动适配**。升级内核后不能复用旧 `.ko`。
-在切换到新内核前，为新内核准备精确头文件，构建并安装对应模块：
+在项目目录中执行：
 
 ```bash
-KERNEL_RELEASE='新6.18内核版本' KDIR='/对应的新头文件目录' \
-  CROSS_COMPILE='/已使用的编译器前缀/aarch64-none-linux-gnu-' bash scripts/build.sh
-bash scripts/install.sh --kernel-release '新6.18内核版本'
+sudo bash scripts/uninstall.sh
 ```
 
-安装记录可以保留多个 6.18 内核的模块，开机自动使用运行内核目录里的版本。
-6.18 之外或没有匹配模块的内核需要重新适配；服务将失败并保留日志，不反复重试。
-CI 默认生成的 `6.18.56-ophub` 包只能用于该内核，不能安装到实机的 `6.18.37-ophub`。
+- 卸载脚本会先校验受管文件的 SHA-256 是否与 `install.json` 一致，随后恢复首次安装前备份的原文件（或删除原本不存在的文件）。
+- 若检测到受管文件被用户手动修改过，脚本会停止操作并列出冲突文件，防止误删用户修改。
+- 卸载不会触碰 `/lib/firmware/uwe5621ds` 固件、不会删除 `NetworkManager` 保存的 Wi-Fi 连接配置，也不会在运行中强行 `rmmod` 当前已加载的模块（正常重启后即不再加载）。
+
+---
+
+## 内核升级说明
+
+本方案按精确内核版本安装，**不使用 DKMS**。升级到新的 Linux `6.18.x` 内核后，旧内核目录中的 `.ko` 无法直接用于新内核。
+
+在切换或升级到新内核时，请准备好与新内核精确匹配的头文件，构建并安装对应版本的模块：
+
+```bash
+KERNEL_RELEASE="新6.18内核版本" KDIR="/对应的新头文件目录" \
+    CROSS_COMPILE="$PWD/.cache/toolchain/bin/aarch64-none-linux-gnu-" bash scripts/build.sh
+sudo bash scripts/install.sh --kernel-release "新6.18内核版本"
+```
+
+安装事务记录支持同时保留多个 `6.18.x` 内核的模块，开机时会自动加载当前运行内核目录下的对应模块。
+
+---
 
 ## 集成到离线 Armbian 根文件系统
 
-在 Linux 构建机上先交叉编译目标内核模块，再指定离线根目录：
+如果你在 Linux 构建机上定制 Armbian 镜像，可以先交叉编译出目标内核的模块，然后通过 `--root` 将模块与开机服务直接写入挂载的离线根文件系统（rootfs）：
 
 ```bash
-sudo bash scripts/install.sh --root /mnt/armbian-rootfs \
-    --kernel-release 6.18.37-ophub --modules "$PWD/dist/6.18.37-ophub"
+sudo bash scripts/install.sh \
+    --root /mnt/armbian-rootfs \
+    --kernel-release 6.18.37-ophub \
+    --modules "$PWD/dist/6.18.37-ophub"
 ```
 
-离线根文件系统应已有固件及目标内核模块目录。此模式用 `depmod -b` 生成目标索引，
-写入相同的服务、参数和启用链接，不调用构建机 systemctl，也不加载 ARM64 模块。
-目标中的父路径符号链接必须仍落在该根文件系统内；拒绝通过链接写到构建机其他目录。
-该入口可放在 Armbian 镜像定制的根文件系统收尾阶段。
+- 目标离线根文件系统中需已包含 `/lib/firmware/uwe5621ds/` 固件及 `/lib/modules/<目标内核>` 目录。
+- 离线模式会调用 `depmod -b` 生成模块依赖索引并创建 systemd 启用链接，不会调用宿主机的 `systemctl`，也不会在构建机上加载 ARM64 模块。
+
