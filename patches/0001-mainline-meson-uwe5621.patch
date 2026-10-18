@@ -448,7 +448,7 @@ index 412240c..b6148fd 100644
  unsigned int sdiohal_get_trans_pac_num(void);
  int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen);
 diff --git a/unisocwcn/sdio/sdiohal_common.c b/unisocwcn/sdio/sdiohal_common.c
-index 34089fb..da5ca14 100644
+index 34089fb..eae7581 100644
 --- a/unisocwcn/sdio/sdiohal_common.c
 +++ b/unisocwcn/sdio/sdiohal_common.c
 @@ -172,6 +172,16 @@ void sdiohal_rx_down(void)
@@ -468,6 +468,15 @@ index 34089fb..da5ca14 100644
  	wait_for_completion_interruptible(&p_data->rx_completed);
  }
  
+@@ -189,6 +199,8 @@ static void sdiohal_completion_init(void)
+ 	init_completion(&p_data->tx_completed);
+ 	init_completion(&p_data->rx_completed);
+ 	init_completion(&p_data->scan_done);
++	/* Meson unregisters directly, without the legacy remove-card wait. */
++	init_completion(&p_data->remove_done);
+ }
+ 
+ void sdiohal_lock_tx_ws(void)
 diff --git a/unisocwcn/sdio/sdiohal_main.c b/unisocwcn/sdio/sdiohal_main.c
 index 2f85b7a..68d5616 100644
 --- a/unisocwcn/sdio/sdiohal_main.c
@@ -1258,10 +1267,47 @@ index 966e74e..66f7c85 100644
  ccflags-y += -DNAN_SUPPORT
  ccflags-y += -DRTT_SUPPORT
 diff --git a/unisocwifi/cfg80211.c b/unisocwifi/cfg80211.c
-index e620c8b..60b72f4 100644
+index e620c8b..e8969c9 100644
 --- a/unisocwifi/cfg80211.c
 +++ b/unisocwifi/cfg80211.c
-@@ -714,7 +714,7 @@ static int sprdwl_add_cipher_key(struct sprdwl_vif *vif, bool pairwise,
+@@ -27,6 +27,7 @@
+ #include "sprdwl.h"
+ #include "cfg80211.h"
+ #include "cmdevt.h"
++#include "npi.h"
+ #include "work.h"
+ #include "ibss.h"
+ #include "intf_ops.h"
+@@ -401,6 +402,9 @@ int sprdwl_init_fw(struct sprdwl_vif *vif)
+ 	u8 *mac;
+ #endif
+ 	u8 vif_ctx_id = 0;
++#ifdef CONFIG_MESON_UWE5621
++	int ret;
++#endif
+ 
+ 	wl_ndev_log(L_DBG, vif->ndev, "%s type %d, mode %d\n", __func__, type,
+ 		    vif->mode);
+@@ -453,6 +457,18 @@ int sprdwl_init_fw(struct sprdwl_vif *vif)
+ 		    __func__, type,
+ 		    vif->mode, vif->ctx_id);
+ 	priv->fw_stat[vif->mode] = SPRDWL_INTF_OPEN;
++#ifdef CONFIG_MESON_UWE5621
++    /* cfg80211 may skip set_power_mgmt when its default is already off. */
++    if (mode == SPRDWL_MODE_STATION || mode == SPRDWL_MODE_P2P_CLIENT) {
++        ret = sprdwl_set_sleep_capability(vif, vif->wdev.ps);
++        if (ret) {
++            wl_ndev_log(L_ERR, vif->ndev,
++                        "firmware sleep capability setup failed: %d\n", ret);
++            sprdwl_uninit_fw(vif);
++            return ret;
++        }
++    }
++#endif
+ 
+ 	return 0;
+ }
+@@ -714,7 +730,7 @@ static int sprdwl_add_cipher_key(struct sprdwl_vif *vif, bool pairwise,
  	return ret;
  }
  
@@ -1270,7 +1316,7 @@ index e620c8b..60b72f4 100644
  static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
  				   int link_id, u8 key_index, bool pairwise,
  				   const u8 *mac_addr,
-@@ -782,7 +782,7 @@ static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct net_device *ndev,
+@@ -782,7 +798,7 @@ static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct net_device *ndev,
  }
  #endif
  
@@ -1279,7 +1325,7 @@ index e620c8b..60b72f4 100644
  static int sprdwl_cfg80211_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
  				   int link_id, u8 key_index, bool pairwise,
  				   const u8 *mac_addr)
-@@ -1159,7 +1159,7 @@ static int sprdwl_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
+@@ -1159,7 +1175,7 @@ static int sprdwl_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
  	return 0;
  }
  
@@ -1288,7 +1334,7 @@ index e620c8b..60b72f4 100644
  static int sprdwl_cfg80211_add_station(struct wiphy *wiphy,
  					   struct wireless_dev *wdev, const u8 *mac,
  					   struct station_parameters *params)
-@@ -1175,7 +1175,7 @@ static int sprdwl_cfg80211_add_station(struct wiphy *wiphy,
+@@ -1175,7 +1191,7 @@ static int sprdwl_cfg80211_add_station(struct wiphy *wiphy,
  }
  #endif
  
@@ -1297,7 +1343,7 @@ index e620c8b..60b72f4 100644
  static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
  					   struct wireless_dev *wdev,
  #else
-@@ -1190,7 +1190,7 @@ static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
+@@ -1190,7 +1206,7 @@ static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
  					)
  
  {
@@ -1306,7 +1352,7 @@ index e620c8b..60b72f4 100644
  	struct sprdwl_vif *vif = netdev_priv(wdev->netdev);
  #else
  	struct sprdwl_vif *vif = netdev_priv(ndev);
-@@ -1200,7 +1200,7 @@ static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
+@@ -1200,7 +1216,7 @@ static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
  #else
  	if (!mac) {
  #endif
@@ -1315,7 +1361,7 @@ index e620c8b..60b72f4 100644
  		wl_ndev_log(L_DBG, wdev->netdev, "ignore NULL MAC address!\n");
  #else
  		wl_ndev_log(L_DBG, ndev, "ignore NULL MAC address!\n");
-@@ -1208,7 +1208,7 @@ static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
+@@ -1208,7 +1224,7 @@ static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
  		goto out;
  	}
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 83)
@@ -1324,7 +1370,7 @@ index e620c8b..60b72f4 100644
  	wl_ndev_log(L_DBG, wdev->netdev, "%s %pM reason:%d\n", __func__, params->mac,
  #else
  	wl_ndev_log(L_DBG, ndev, "%s %pM reason:%d\n", __func__, params->mac,
-@@ -1217,7 +1217,7 @@ static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
+@@ -1217,7 +1233,7 @@ static int sprdwl_cfg80211_del_station(struct wiphy *wiphy,
  	sprdwl_del_station(vif->priv, vif->ctx_id, params->mac,
  			params->reason_code);
  #else
@@ -1333,7 +1379,7 @@ index e620c8b..60b72f4 100644
  	wl_ndev_log(L_DBG, wdev->netdev, "%s %pM\n", __func__, mac);
  #else
  	wl_ndev_log(L_DBG, ndev, "%s %pM\n", __func__, mac);
-@@ -1231,7 +1231,7 @@ out:
+@@ -1231,7 +1247,7 @@ out:
  	return 0;
  }
  
@@ -1342,7 +1388,7 @@ index e620c8b..60b72f4 100644
  static int
  sprdwl_cfg80211_change_station(struct wiphy *wiphy,
  				   struct wireless_dev *wdev, const u8 *mac,
-@@ -1250,7 +1250,7 @@ sprdwl_cfg80211_change_station(struct wiphy *wiphy,
+@@ -1250,7 +1266,7 @@ sprdwl_cfg80211_change_station(struct wiphy *wiphy,
  #endif
  
  
@@ -1351,7 +1397,7 @@ index e620c8b..60b72f4 100644
  static int sprdwl_cfg80211_get_station(struct wiphy *wiphy,
  					   struct wireless_dev *wdev, const u8 *mac,
  					   struct station_info *sinfo)
-@@ -1491,14 +1491,14 @@ void sprdwl_report_softap(struct sprdwl_vif *vif, u8 is_connect, u8 *addr,
+@@ -1491,14 +1507,14 @@ void sprdwl_report_softap(struct sprdwl_vif *vif, u8 is_connect, u8 *addr,
  			netif_carrier_on(vif->ndev);
  			netif_wake_queue(vif->ndev);
  		}
@@ -1368,7 +1414,7 @@ index e620c8b..60b72f4 100644
  		cfg80211_del_sta(&vif->wdev, addr, GFP_KERNEL);
  #else
  		cfg80211_del_sta(vif->ndev, addr, GFP_KERNEL);
-@@ -3017,13 +3017,13 @@ void sprdwl_cfg80211_dump_frame_prot_info(int send, int freq,
+@@ -3017,13 +3033,13 @@ void sprdwl_cfg80211_dump_frame_prot_info(int send, int freq,
  }
  
  /* P2P related stuff */
@@ -1384,7 +1430,7 @@ index e620c8b..60b72f4 100644
  static int sprdwl_cfg80211_remain_on_channel(struct wiphy *wiphy,
  					     struct wireless_dev *wdev,
  					     struct ieee80211_channel *chan,
-@@ -3037,18 +3037,18 @@ static int sprdwl_cfg80211_remain_on_channel(struct wiphy *wiphy,
+@@ -3037,18 +3053,18 @@ static int sprdwl_cfg80211_remain_on_channel(struct wiphy *wiphy,
  					     u64 *cookie)
  #endif
  {
@@ -1406,7 +1452,7 @@ index e620c8b..60b72f4 100644
  	/* cookie is pre-assigned by cfg80211 before the op is called */
  	ck = cookie;
  #else
-@@ -3080,7 +3080,7 @@ static int sprdwl_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy,
+@@ -3080,7 +3096,7 @@ static int sprdwl_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy,
  	return sprdwl_cancel_remain_chan(vif->priv, vif->ctx_id, cookie);
  }
  
@@ -1415,7 +1461,7 @@ index e620c8b..60b72f4 100644
  static int sprdwl_cfg80211_mgmt_tx(struct wiphy *wiphy,
  				   struct wireless_dev *wdev,
  				   struct cfg80211_mgmt_tx_params *params,
-@@ -3106,13 +3106,13 @@ static int sprdwl_cfg80211_mgmt_tx(struct wiphy *wiphy,
+@@ -3106,13 +3122,13 @@ static int sprdwl_cfg80211_mgmt_tx(struct wiphy *wiphy,
  	unsigned int wait = params->wait;
  	bool dont_wait_for_ack = params->dont_wait_for_ack;
  #endif
@@ -1431,7 +1477,32 @@ index e620c8b..60b72f4 100644
  	/* cookie is pre-assigned by cfg80211 before the op is called */
  	ck = cookie;
  #else
-@@ -4342,12 +4342,17 @@ struct sprdwl_priv *sprdwl_core_create(enum sprdwl_hw_type type,
+@@ -3573,13 +3589,19 @@ static int sprdwl_cfg80211_set_mac_acl(struct wiphy *wiphy,
+ }
+ 
+ static int sprdwl_cfg80211_set_power_mgmt(struct wiphy *wiphy, struct net_device *ndev,
+-				   bool enabled, int timeout)
++                                   bool enabled, int timeout)
+ {
+-	struct sprdwl_vif *vif = netdev_priv(ndev);
++    struct sprdwl_vif *vif = netdev_priv(ndev);
++    int ret;
+ 
+-	wl_ndev_log(L_DBG, ndev, "%s power save status:%d\n", __func__, enabled);
+-	return sprdwl_power_save(vif->priv, vif->ctx_id,
+-				 SPRDWL_SET_PS_STATE, enabled);
++    wl_ndev_log(L_DBG, ndev, "%s power save status:%d\n", __func__, enabled);
++    ret = sprdwl_power_save(vif->priv, vif->ctx_id,
++                           SPRDWL_SET_PS_STATE, enabled);
++#ifdef CONFIG_MESON_UWE5621
++    if (!ret)
++        ret = sprdwl_set_sleep_capability(vif, enabled);
++#endif
++    return ret;
+ }
+ 
+ #ifdef ACS_SUPPORT
+@@ -4342,12 +4364,17 @@ struct sprdwl_priv *sprdwl_core_create(enum sprdwl_hw_type type,
  	int ret = 0;
  
  	sprdwl_check_intf_ops(ops);
@@ -1451,7 +1522,7 @@ index e620c8b..60b72f4 100644
  	}
  	priv = wiphy_priv(wiphy);
  	priv->wiphy = wiphy;
-@@ -4378,7 +4383,10 @@ struct sprdwl_priv *sprdwl_core_create(enum sprdwl_hw_type type,
+@@ -4378,7 +4405,10 @@ struct sprdwl_priv *sprdwl_core_create(enum sprdwl_hw_type type,
  	ret = sprdwl_init_work(priv);
  	if (ret != 0) {
  		wl_err("sprdwl_init_work failed!\n");
@@ -1463,7 +1534,7 @@ index e620c8b..60b72f4 100644
  	}
  
  	return priv;
-@@ -4386,6 +4394,8 @@ struct sprdwl_priv *sprdwl_core_create(enum sprdwl_hw_type type,
+@@ -4386,6 +4416,8 @@ struct sprdwl_priv *sprdwl_core_create(enum sprdwl_hw_type type,
  
  void sprdwl_core_free(struct sprdwl_priv *priv)
  {
@@ -1741,10 +1812,10 @@ index b7485e9..a1d0807 100644
  int sprdwl_set_regdom(struct sprdwl_priv *priv, u8 *regdom, u32 len);
  int sprdwl_set_rts(struct sprdwl_priv *priv, u16 rts_threshold);
 diff --git a/unisocwifi/main.c b/unisocwifi/main.c
-index d020fd8..7c75369 100644
+index d020fd8..a3ab36b 100644
 --- a/unisocwifi/main.c
 +++ b/unisocwifi/main.c
-@@ -953,6 +953,14 @@ static int sprdwl_set_mac(struct net_device *dev, void *addr)
+@@ -953,6 +953,30 @@ static int sprdwl_set_mac(struct net_device *dev, void *addr)
  	return 0;
  }
  
@@ -1756,10 +1827,36 @@ index d020fd8..7c75369 100644
 +#endif
 +}
 +
++#ifdef CONFIG_MESON_UWE5621
++/* Modern device ioctl dispatch no longer calls ndo_do_ioctl. */
++static int sprdwl_meson_siocdevprivate(struct net_device *ndev,
++                                     struct ifreq *ifr,
++                                     void __user *data, int cmd)
++{
++#ifdef CONFIG_COMPAT
++    /* The legacy suspend handler expects a native pointer-sized command. */
++    if (in_compat_syscall())
++        return -EOPNOTSUPP;
++#endif
++    ifr->ifr_data = data;
++    return sprdwl_ioctl(ndev, ifr, cmd);
++}
++#endif
++
  static struct net_device_ops sprdwl_netdev_ops = {
  	.ndo_init = sprdwl_init,
  	.ndo_uninit = sprdwl_uninit,
-@@ -1430,6 +1438,7 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
+@@ -962,6 +986,9 @@ static struct net_device_ops sprdwl_netdev_ops = {
+ 	.ndo_get_stats = sprdwl_get_stats,
+ 	.ndo_tx_timeout = sprdwl_tx_timeout,
+ 	.ndo_do_ioctl = sprdwl_ioctl,
++#ifdef CONFIG_MESON_UWE5621
++    .ndo_siocdevprivate = sprdwl_meson_siocdevprivate,
++#endif
+ 	.ndo_set_mac_address = sprdwl_set_mac,
+ };
+ 
+@@ -1430,6 +1457,7 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
  	ndev->destructor = free_netdev;
  #endif
  	ndev->needed_headroom = priv->skb_head_len;
@@ -1767,7 +1864,7 @@ index d020fd8..7c75369 100644
  	ndev->watchdog_timeo = 2 * HZ;
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)
  	ndev->features |= NETIF_F_CSUM_MASK;
-@@ -1451,7 +1460,7 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
+@@ -1451,7 +1479,7 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
  #endif
  
  	/* register new Ethernet interface */
@@ -1776,7 +1873,7 @@ index d020fd8..7c75369 100644
  	if (ret) {
  		wl_ndev_log(L_ERR, ndev, "failed to regitster netdev(%d)!\n", ret);
  		goto err;
-@@ -1473,7 +1482,7 @@ static void sprdwl_unregister_netdev(struct sprdwl_vif *vif)
+@@ -1473,7 +1501,7 @@ static void sprdwl_unregister_netdev(struct sprdwl_vif *vif)
  	if (vif->priv->fw_capa & SPRDWL_CAPA_MC_FILTER)
  		kfree(vif->mc_filter);
  	sprdwl_deinit_vif(vif);
@@ -1785,17 +1882,20 @@ index d020fd8..7c75369 100644
  }
  
  struct wireless_dev *sprdwl_add_iface(struct sprdwl_priv *priv,
-@@ -1533,7 +1542,9 @@ next_intf:
+@@ -1533,7 +1561,12 @@ next_intf:
  		list_del(&vif->vif_node);
  		spin_unlock_bh(&priv->list_lock);
  		rtnl_lock();
++		/* NETDEV_GOING_DOWN takes the wiphy mutex itself. */
++		if (vif->ndev)
++			dev_close(vif->ndev);
 +		wiphy_lock(priv->wiphy);
  		sprdwl_del_iface(priv, vif);
 +		wiphy_unlock(priv->wiphy);
  		rtnl_unlock();
  		goto next_intf;
  	}
-@@ -1555,82 +1566,95 @@ static void sprdwl_init_debugfs(struct sprdwl_priv *priv)
+@@ -1555,82 +1588,95 @@ static void sprdwl_init_debugfs(struct sprdwl_priv *priv)
  
  int sprdwl_core_init(struct device *dev, struct sprdwl_priv *priv)
  {
@@ -1962,7 +2062,7 @@ index d020fd8..7c75369 100644
  }
  
  int sprdwl_core_deinit(struct sprdwl_priv *priv)
-@@ -1654,6 +1678,16 @@ int sprdwl_core_deinit(struct sprdwl_priv *priv)
+@@ -1654,6 +1700,16 @@ int sprdwl_core_deinit(struct sprdwl_priv *priv)
  	return 0;
  }
  
@@ -2180,3 +2280,115 @@ index e94e2be..9998cd5 100644
  
  		g_intf_ops.hif_ops = NULL;
  		g_intf_ops.max_num = 0;
+diff --git a/unisocwifi/npi.c b/unisocwifi/npi.c
+index 66d1ad9..742a0ea 100644
+--- a/unisocwifi/npi.c
++++ b/unisocwifi/npi.c
+@@ -72,6 +72,38 @@ static int sprdwl_get_flag(void)
+ 	return flag;
+ }
+ 
++/* The firmware has a sleep capability separate from WIFI_CMD_POWER_SAVE. */
++int sprdwl_set_sleep_capability(struct sprdwl_vif *vif, bool enabled)
++{
++    struct {
++        struct sprdwl_npi_cmd_hdr header;
++        __le32 capability;
++    } __packed request = {
++        .header = {
++            .type = SPRDWL_HT2CP_CMD,
++            .subtype = SPRDWL_NPI_CMD_SET_WLAN_CAP,
++            .len = cpu_to_le16(sizeof(__le32)),
++        },
++        .capability = cpu_to_le32(enabled ? SPRDWL_STA_GC_EN_SLEEP :
++                                           SPRDWL_STA_GC_NO_SLEEP),
++    };
++    struct sprdwl_npi_cmd_resp_hdr reply = {0};
++    u16 length = sizeof(reply);
++    int ret;
++
++    ret = sprdwl_npi_send_recv(vif->priv, vif->ctx_id, (u8 *)&request,
++                              sizeof(request), (u8 *)&reply, &length);
++    if (ret)
++        return ret;
++    if (length != sizeof(reply) || reply.type != SPRDWL_CP2HT_REPLY ||
++        reply.subtype != SPRDWL_NPI_CMD_SET_WLAN_CAP ||
++        le16_to_cpu(reply.len) != sizeof(reply.status))
++        return -EPROTO;
++    if (le32_to_cpu(reply.status))
++        return -EIO;
++    return 0;
++}
++
+ static int sprdwl_cmd_set_psm_cap(struct sprdwl_vif *vif)
+ {
+ 	struct sprdwl_priv *priv = NULL;
+@@ -192,6 +224,10 @@ static int sprdwl_nl_npi_handler(struct sk_buff *skb_2, struct genl_info *info)
+ 		wl_err("%s: invalid content\n", __func__);
+ 		return -EPERM;
+ 	}
++	if (nla_len(info->attrs[SPRDWL_NL_ATTR_AP2CP]) <
++	    sizeof(struct sprdwl_npi_cmd_hdr))
++		return -EINVAL;
++
+ 	r_buf = kmalloc(1024, GFP_KERNEL);
+ 	if (!r_buf)
+ 		return -ENOMEM;
+@@ -265,8 +301,8 @@ static int sprdwl_nl_get_info_handler(struct sk_buff *skb_2,
+ 	int ret = 0;
+ 
+ 	if (vif) {
++		/* pre_doit holds the netdev reference, released by post_doit. */
+ 		ether_addr_copy(r_buf, vif->ndev->dev_addr);
+-		sprdwl_put_vif(vif);
+ 		r_len = 6;
+ 		ret = sprdwl_nl_send_generic(info, SPRDWL_NL_ATTR_CP2AP,
+ 					     SPRDWL_NL_CMD_GET_INFO, r_len,
+@@ -279,6 +315,7 @@ static int sprdwl_nl_get_info_handler(struct sk_buff *skb_2,
+ }
+ 
+ static struct nla_policy __maybe_unused sprdwl_genl_policy[SPRDWL_NL_ATTR_MAX + 1] = {
++	[SPRDWL_NL_ATTR_IFINDEX] = {.type = NLA_U32},
+ 	[SPRDWL_NL_ATTR_AP2CP] = {.type = NLA_BINARY, .len = 1024},
+ 	[SPRDWL_NL_ATTR_CP2AP] = {.type = NLA_BINARY, .len = 1024}
+ };
+@@ -286,6 +323,7 @@ static struct nla_policy __maybe_unused sprdwl_genl_policy[SPRDWL_NL_ATTR_MAX +
+ static struct genl_ops sprdwl_nl_ops[] = {
+ 	{
+ 		.cmd = SPRDWL_NL_CMD_NPI,
++		.flags = GENL_ADMIN_PERM,
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+ //		.policy = sprdwl_genl_policy,
+ #else
+@@ -295,6 +333,7 @@ static struct genl_ops sprdwl_nl_ops[] = {
+ 	},
+ 	{
+ 		.cmd = SPRDWL_NL_CMD_GET_INFO,
++		.flags = GENL_ADMIN_PERM,
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+ //		.policy = sprdwl_genl_policy,
+ #else
+@@ -310,6 +349,9 @@ static struct genl_family sprdwl_nl_genl_family = {
+ 	.name = "SPRDWL_NL",
+ 	.version = 1,
+ 	.maxattr = SPRDWL_NL_ATTR_MAX,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
++	.policy = sprdwl_genl_policy,
++#endif
+ 	.pre_doit = sprdwl_npi_pre_doit,
+ 	.post_doit = sprdwl_npi_post_doit,
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
+diff --git a/unisocwifi/npi.h b/unisocwifi/npi.h
+index 0c81ef0..fa23968 100644
+--- a/unisocwifi/npi.h
++++ b/unisocwifi/npi.h
+@@ -70,6 +70,9 @@ enum sprdwl_npi_cmd_type {
+ 	SPRDWL_CP2HT_REPLY,
+ };
+ 
++struct sprdwl_vif;
++int sprdwl_set_sleep_capability(struct sprdwl_vif *vif, bool enabled);
++
+ void sprdwl_init_npi(void);
+ void sprdwl_deinit_npi(void);
+ #endif /*__NPI_H__*/
