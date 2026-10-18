@@ -99,7 +99,13 @@ def prepare(project, inputs, output, tag, kernel, repository, commit, runner=com
     asset = f'cm311-uwe5621ds-{version}-{kernel}.tar.gz'
     notes = f'''# CM311 UWE5621DS {tag}
 
-交付沿用已实测的 v8 驱动：MTU 1400，TX ADDBA 重试间隔 30000 ms。
+本次交付包含固件休眠能力同步修复：STA/P2P Client 初始化与省电设置同步固件休眠状态，
+并校验固件应答；同时修复控制通道、网卡注销及 SDIO 移除问题。
+实机重启后，Windows 有线主机 ping 无线地址 60 包零丢包，RTT 平均 7 ms（2–16 ms）。
+详见 [更新日志](https://github.com/{repository}/blob/{tag}/CHANGELOG.md) 与
+[入站延迟验证](https://github.com/{repository}/blob/{tag}/docs/INBOUND-LATENCY.md)。
+
+驱动补丁标记仍为 v8：MTU 1400，TX ADDBA 重试间隔 30000 ms。
 
 **本次预编译模块仅适用于 ARM64 / Linux `{kernel}`。**
 内核以 `uname -r` 为准，必须完全一致。`6.18.37-ophub` 与 `6.18.56-ophub` 的模块不能互换。
