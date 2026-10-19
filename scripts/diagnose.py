@@ -124,7 +124,7 @@ class Collector:
                      'include/generated/compile.h', 'include/net/cfg80211.h',
                      'include/linux/pm_wakeup.h', 'Module.symvers'):
             self.copy(headers / name, 'headers/' + name)
-        for name in ('PORT_VERSION', 'patches/0001-mainline-meson-uwe5621.patch'):
+        for name in ('PORT_VERSION', 'driver/uwe5622/Makefile'):
             self.copy(self.root / name, 'project/' + name)
         modules = self.root / 'dist' / release
         for name in ('source-stamp', 'kernel-release', 'SHA256SUMS'):

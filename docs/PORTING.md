@@ -44,8 +44,8 @@ v8 修改与实机对照步骤见 [ADDBA 重试对照](v8-addba-comparison.md)�
 ## 实验改动
 
 基于 [armbian/uwe5622](https://github.com/armbian/uwe5622) 的固定提交
-`fa9d1a6703a93a85bcf68e865ebc2726474076ad`，补丁保存在
-`patches/0001-mainline-meson-uwe5621.patch`。
+`fa9d1a6703a93a85bcf68e865ebc2726474076ad`，应用补丁后的源码保存在
+`driver/uwe5622/`。
 
 1. 增加独立的 `CONFIG_MESON_UWE5621` 构建选择，不启用晶晨旧 BSP、全志或瑞芯微的板级代码。
 2. 沿用现有 MMC core / `mmc-pwrseq-simple` 的供电、复位及外部时钟，不重复申请 GPIO。
@@ -113,8 +113,9 @@ CROSS_COMPILE="$PWD/.cache/toolchain/bin/aarch64-none-linux-gnu-" bash scripts/b
 检查 `include/generated/autoconf.h`、`include/generated/utsrelease.h` 和 `Module.symvers`，
 拒绝头文件版本与目标版本不一致的构建。只有 build 符号链接不代表头文件完整。
 
-提供的源码包已包含应用补丁的驱动源码；从仓库克隆时，首次构建会获取上述固定提交。
-脚本不会覆盖已有且未标记的源码目录。更新补丁后，应把旧 `build/uwe5622` 移到别处再构建。
+仓库和源码包均包含 `driver/uwe5622/` 下的完整驱动源码，构建无需联网拉取上游或应用补丁。
+`scripts/prepare.sh` 将源码复制到 `build/uwe5622/`，编译产物与受版本控制的源码分离。
+源码变更后，应把旧 `build/uwe5622` 移到别处再构建；脚本会拒绝覆盖指纹不匹配或未标记的目录。
 
 输出：
 

@@ -137,10 +137,9 @@ class SystemInstall:
         directory = Path(directory)
         if (directory / 'kernel-release').read_text().strip() != release:
             raise ValueError('Build output kernel-release does not match the requested kernel')
-        patch = sha((self.project / 'patches/0001-mainline-meson-uwe5621.patch').read_bytes())
-        expected = 'fa9d1a6703a93a85bcf68e865ebc2726474076ad ' + patch
+        expected = run(['python3', str(self.project / 'scripts/source-tree.py'), '--stamp'])
         if (directory / 'source-stamp').read_text().strip() != expected:
-            raise ValueError('Modules do not match this driver patch; rebuild before installing')
+            raise ValueError('Modules do not match this driver source; rebuild before installing')
         recorded = {}
         for line in (directory / 'SHA256SUMS').read_text().splitlines():
             digest, name = line.split(maxsplit=1)

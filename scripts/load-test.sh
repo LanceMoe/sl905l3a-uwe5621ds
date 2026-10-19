@@ -18,9 +18,9 @@ if [[ $trace == 1 ]] && ! grep -qw debugfs /proc/filesystems; then
     echo 'Run scripts/collect-state.sh and send its output.' >&2
     exit 1
 fi
-patch_hash=$(sha256sum "$root/patches/0001-mainline-meson-uwe5621.patch" | cut -d ' ' -f 1)
-if [[ ! -f "$modules/source-stamp" ]] || ! grep -q " $patch_hash\$" "$modules/source-stamp"; then
-    echo 'Modules were not built with this patch version. Run scripts/build.sh first.' >&2
+expected=$(python3 "$root/scripts/source-tree.py" --stamp)
+if [[ ! -f "$modules/source-stamp" ]] || [[ $(cat "$modules/source-stamp") != "$expected" ]]; then
+    echo 'Modules were not built with this driver source. Run scripts/build.sh first.' >&2
     exit 1
 fi
 [[ -s /lib/firmware/uwe5621ds/wcnmodem.bin ]] || {

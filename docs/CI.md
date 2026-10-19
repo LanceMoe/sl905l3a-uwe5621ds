@@ -10,7 +10,7 @@
 Push / Pull Request / 手动 Run workflow 都执行：
 
 1. Bash 语法、ShellCheck、Python 编译、git diff 空白检查和 actionlint。
-2. 获取固定上游、应用项目补丁，运行所有 `tests/test_*.py`。
+2. 从仓库内 `driver/uwe5622/` 准备构建副本，运行所有 `tests/test_*.py`。
    包括实际驱动函数的 ASan/UBSan 故障注入、IRQ/接收/启动/命令回归、诊断采集、
    参数恢复和安装/重装/升级/卸载事务测试。
 3. 生成源码包和集成更新包，上传测试日志。

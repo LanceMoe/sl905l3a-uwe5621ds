@@ -30,8 +30,8 @@ class InstallationTests(unittest.TestCase):
             (self.output / (module + '.ko')).write_bytes(b'test module: ' + module.encode())
         self.checksums()
         (self.output / 'kernel-release').write_text(self.release + '\n')
-        patch = hashlib.sha256((PROJECT / 'patches/0001-mainline-meson-uwe5621.patch').read_bytes()).hexdigest()
-        (self.output / 'source-stamp').write_text('fa9d1a6703a93a85bcf68e865ebc2726474076ad ' + patch + '\n')
+        stamp = subprocess.check_output(['python3', str(PROJECT / 'scripts/source-tree.py'), '--stamp'], text=True).strip()
+        (self.output / 'source-stamp').write_text(stamp + '\n')
         firmware = self.root / 'lib/firmware/uwe5621ds'
         firmware.mkdir(parents=True)
         for name in ('wcnmodem.bin', 'wifi_56630001_3ant.ini'):
@@ -109,7 +109,7 @@ class InstallationTests(unittest.TestCase):
         stamp = self.output / 'source-stamp'
         original_stamp = stamp.read_text()
         stamp.write_text('incorrect-source\n')
-        with self.assertRaisesRegex(ValueError, 'do not match this driver patch'):
+        with self.assertRaisesRegex(ValueError, 'do not match this driver source'):
             self.install()
         stamp.write_text(original_stamp)
         self.magic = '6.18.56-ophub SMP aarch64'

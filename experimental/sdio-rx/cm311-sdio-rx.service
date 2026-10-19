@@ -1,0 +1,13 @@
+[Unit]
+Description=CM311 bounded SDIO RX candidate
+After=local-fs.target systemd-udev-trigger.service
+Before=cm311-wifi.service NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/cm311-sdio-rx-bind
+RemainAfterExit=yes
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

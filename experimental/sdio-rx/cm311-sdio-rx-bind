@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Runs once at boot, before WCN loads. Never detach storage or a live Wi-Fi BSP.
+set -euo pipefail
+[[ $EUID == 0 ]] || exit 1
+for module in uwe5621_bsp_sdio uwe5622_bsp_sdio sprdwl_ng; do
+    [[ ! -d /sys/module/$module ]] || {
+        echo "$module is already loaded; use a normal reboot, not a live takeover." >&2; exit 1;
+    }
+done
+controller=
+for candidate in /sys/bus/platform/devices/*; do
+    [[ -r $candidate/of_node/reg && -r $candidate/of_node/compatible ]] || continue
+    [[ ${candidate##*/} == ffe03000.mmc ]] || continue
+    compatible=$(tr '\0' '\n' < "$candidate/of_node/compatible")
+    [[ $compatible == amlogic,meson-axg-mmc ]] || continue
+    # Platform devices need not expose a sysfs resource file. Read the DT
+    # address and size (two big-endian cells each on this board) instead.
+    reg=$(od -An -v -tx1 "$candidate/of_node/reg" | tr -d ' \n')
+    if [[ $reg == 00000000ffe030000000000000000800 ]]; then
+        [[ -z $controller ]] || { echo 'Ambiguous SDIO controller.' >&2; exit 1; }
+        controller=$(readlink -f "$candidate")
+    fi
+done
+[[ -n $controller && -w $controller/driver_override ]] || {
+    echo 'Expected ffe03000 SDIO platform controller was not found.' >&2; exit 1;
+}
+if compgen -G "$controller/mmc_host/mmc*/mmc*:*/block/*" >/dev/null; then
+    echo 'Refusing to detach a controller with block/storage devices.' >&2; exit 1
+fi
+original=$(basename "$(readlink -f "$controller/driver")")
+[[ $original == meson-gx-mmc ]] || { echo "Unexpected original driver: $original" >&2; exit 1; }
+override=$(cat "$controller/driver_override")
+[[ -z $override || $override == '(null)' ]] || { echo 'A driver override already exists.' >&2; exit 1; }
+name=${controller##*/}
+modprobe cm311_sdio_rx
+restore() {
+    trap - ERR
+    if [[ -L $controller/driver ]] &&
+       [[ $(basename "$(readlink -f "$controller/driver")") == cm311-sdio-rx ]]; then
+        printf '%s\n' "$name" > /sys/bus/platform/drivers/cm311-sdio-rx/unbind || true
+    fi
+    printf '\n' > "$controller/driver_override" || true
+    if [[ ! -L $controller/driver ]]; then
+        printf '%s\n' "$name" > /sys/bus/platform/drivers/meson-gx-mmc/bind || true
+    fi
+    echo 'Experimental SDIO bind failed; attempted to restore the built-in host.' >&2
+}
+trap restore ERR
+printf '%s\n' cm311-sdio-rx > "$controller/driver_override"
+printf '%s\n' "$name" > /sys/bus/platform/drivers/meson-gx-mmc/unbind
+printf '%s\n' "$name" > /sys/bus/platform/drivers/cm311-sdio-rx/bind
+[[ $(basename "$(readlink -f "$controller/driver")") == cm311-sdio-rx ]]
+trap - ERR
+echo 'CM311 experimental SRAM streaming host bound (ffe03000 only).'

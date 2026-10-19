@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/LanceMoe/sl905l3a-uwe5621ds/actions/workflows/ci.yml/badge.svg)](https://github.com/LanceMoe/sl905l3a-uwe5621ds/actions/workflows/ci.yml)
 
-本项目面向搭载紫光展锐 **UWE5621DS（Marlin3E）** 无线芯片的 **CM311-1a YST（晶晨 S905L3A）** 机顶盒，提供适配主线 **Linux 6.18**（如 Armbian `6.18.x-ophub`）的 Wi-Fi 与 WCN 底层驱动补丁、自动化编译脚本、系统开机自启服务以及故障诊断工具。
+本项目面向搭载紫光展锐 **UWE5621DS（Marlin3E）** 无线芯片的 **CM311-1a YST（晶晨 S905L3A）** 机顶盒，提供适配主线 **Linux 6.18**（如 Armbian `6.18.x-ophub`）的 Wi-Fi 与 WCN 底层驱动源码、自动化编译脚本、系统开机自启服务以及故障诊断工具。
 
 当前发行版本为 **0.8.1**（驱动补丁版本 **v8**）。
 
@@ -275,3 +275,12 @@ sudo bash scripts/install.sh
 - 上游驱动源码来自 [armbian/uwe5622](https://github.com/armbian/uwe5622/tree/fa9d1a6703a93a85bcf68e865ebc2726474076ad)（固定提交 `fa9d1a6703a93a85bcf68e865ebc2726474076ad`）。
 - 本项目编写的补丁、构建/安装脚本、测试与文档采用 **GPL-2.0-only** 许可证，详见 [LICENSE](LICENSE) 与 [第三方来源说明 (THIRD_PARTY.md)](THIRD_PARTY.md)。
 
+
+### 源码目录
+
+- `driver/uwe5622/`：基于上述上游固定提交、已应用本项目移植修改的驱动源码，后续直接在这里修改。
+- `build/uwe5622/`：构建时生成的源码副本和编译产物，不纳入版本控制。
+- `scripts/`、`packaging/`、`tests/`：构建安装、系统集成与测试。
+- `experimental/`：实验性 SDIO 工具；`docs/`：移植和诊断记录。
+
+不再维护聚合补丁文件。源码变更后先移走旧 `build/uwe5622/`，再运行构建或测试。

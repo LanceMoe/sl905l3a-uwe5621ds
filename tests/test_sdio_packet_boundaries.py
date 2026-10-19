@@ -54,7 +54,9 @@ typedef uint8_t u8;
 static void fake_log(const char *format, ...) { (void)format; }
 #define pr_err_ratelimited(...) fake_log(__VA_ARGS__)
 #define sdiohal_debug(...) fake_log(__VA_ARGS__)
-struct mmc_host { unsigned max_blk_count, max_req_size, max_seg_size, max_blk_size; };
+struct device_driver { const char *name; };
+struct device { struct device_driver *driver; };
+struct mmc_host { unsigned max_blk_count, max_req_size, max_seg_size, max_blk_size; struct device *parent; };
 struct mmc_card { struct mmc_host *host; unsigned quirks; struct { bool multi_block; } cccr; };
 struct sdio_func { struct mmc_card *card; unsigned cur_blksize, max_blksize, num; };
 struct mbuf_t { struct mbuf_t *next; unsigned char *buf; unsigned short len; };
@@ -67,7 +69,9 @@ struct sdiohal_data_t {
     struct sdiohal_sendbuf_t send_buf;
     unsigned char *eof_buf;
 };
-static struct mmc_host host = {3,1536,1536,512};
+static struct device_driver driver = {.name="meson-gx-mmc"};
+static struct device parent = {.driver=&driver};
+static struct mmc_host host = {3,1536,1536,512,&parent};
 static struct mmc_card card = {.host=&host, .cccr.multi_block=true};
 static struct sdio_func func = {&card,512,512,1};
 static struct sdiohal_data_t data;
@@ -176,6 +180,12 @@ int main(void) {
     const unsigned exact[] = {1528};
     data.sdio_func[1] = &func;
     assert(sdiohal_packet_limit() == 1536);
+    driver.name = "cm311-sdio-rx";
+    host.max_req_size = host.max_seg_size = 4096; host.max_blk_count = 8;
+    assert(sdiohal_packet_limit() == 1536 && sdiohal_rx_packet_limit() == 4096);
+    driver.name = "meson-gx-mmc";
+    assert(sdiohal_rx_packet_limit() == 1536);
+    host.max_req_size = host.max_seg_size = 1536; host.max_blk_count = 3;
     host.max_seg_size = 1024; assert(sdiohal_packet_limit() == 1024);
     host.max_seg_size = 1536; host.max_req_size = 1024;
     assert(sdiohal_packet_limit() == 1024);
@@ -195,7 +205,7 @@ int main(void) {
     assert(!assignments);
 
     reset(); sdiohal_rx_adapt_set_dtbs(0);
-    assert(data.dtbs == 2048 && sdiohal_rx_adapt_get() == 1536);
+    assert(data.dtbs == 1536 && sdiohal_rx_adapt_get() == 1536);
     assert(sdio_io_rw_ext_helper(&func,0,0x20,0,buf,sdiohal_rx_adapt_get()) == 0);
     assert(requests == 1 && request_bytes[0] == 1536);
     assert(sdiohal_rx_buf_parser((char *)buf,*(uint32_t *)(buf+1528),1528) == 0);
@@ -204,10 +214,19 @@ int main(void) {
     sdiohal_rx_adapt_set_dtbs(100000); assert(sdiohal_rx_adapt_get() == 1536);
 
     reset(); memset(buf,0,sizeof(buf)); h = (void *)buf;
+    /* Hardware log shape: valid=40 next=1516 in a 1536 read. The 40-byte
+     * packet is wholly present; the following head is not and must not
+     * fail or consume the completed packet. */
+    h->len = 40; h->subtype = 10; memcpy(buf+4, "SMALL", 5);
+    ((struct sdio_puh_t *)(buf+44))->len = 1600;
+    ((struct sdio_puh_t *)(buf+44))->subtype = 10;
+    ((struct sdio_puh_t *)(buf+44))->type = 0;
+    assert(sdiohal_rx_buf_parser((char *)buf,40+1600,1528) == 0);
+    assert(assignments == 1 && last_length == 40 && last_channel == 22);
     h->len = 2000; h->subtype = 10;
-    assert(sdiohal_rx_buf_parser((char *)buf,2000,1528) == -EPROTO);
-    assert(sdiohal_rx_buf_parser((char *)buf,64,1528) == -EPROTO);
-    h->len = 0; assert(sdiohal_rx_buf_parser((char *)buf,4,1528) == -EPROTO);
+    assert(sdiohal_rx_buf_parser((char *)buf,2000,1528) == 0 && assignments == 1);
+    assert(sdiohal_rx_buf_parser((char *)buf,64,1528) == 0 && assignments == 1);
+    h->len = 0; assert(sdiohal_rx_buf_parser((char *)buf,4,1528) == 0);
     h->len = 64; h->subtype = 15;
     assert(sdiohal_rx_buf_parser((char *)buf,64,1528) == -EPROTO);
     h->subtype = 10; fail_allocation = true;
@@ -241,9 +260,10 @@ if __name__ == '__main__':
     bus = (source / 'unisocwcn/include/wcn_bus.h').read_text()
     header = re.search(r'struct sdio_puh_t \{.*?\n\};', bus, re.S).group()
     kernel = (root / 'tests/fixtures/sdio_io_6_18_37.c').read_text()
-    body = function(main, 'sdiohal_packet_limit')
+    body = function(main, 'sdiohal_packet_limit') + '\n' + function(main, 'sdiohal_rx_packet_limit')
     body += '\n' + '\n'.join(function(rx, name) for name in (
-        'sdiohal_rx_adapt_get', 'sdiohal_rx_adapt_set_dtbs', 'sdiohal_rx_buf_parser'))
+        'sdiohal_rx_adapt_get', 'sdiohal_rx_adapt_set_dtbs',
+        'sdiohal_rx_dispatch_span', 'sdiohal_rx_buf_parser'))
     body += '\n' + '\n'.join(function(common, name) for name in (
         'sdiohal_tx_packer', 'sdiohal_tx_set_eof'))
     body += '\n' + function(tx, 'sdiohal_meson_tx_send')

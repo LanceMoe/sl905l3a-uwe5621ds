@@ -19,7 +19,7 @@ def files(root, kind, release):
     paths = [root / name for name in ('README.md', 'DIAGNOSTICS.md', 'INSTALL.md', 'CHANGELOG.md',
                                       'LICENSE', 'THIRD_PARTY.md', 'VERSION', 'PORT_VERSION',
                                       '.gitattributes', '.gitignore')]
-    for directory in ('scripts', 'tests', 'patches', 'docs', 'packaging', 'ci', '.github'):
+    for directory in ('scripts', 'tests', 'driver', 'experimental', 'docs', 'packaging', 'ci', '.github'):
         paths.extend(path for path in (root / directory).rglob('*') if path.is_file()
                      and '__pycache__' not in path.parts and path.suffix != '.pyc')
     if kind != 'integration':
