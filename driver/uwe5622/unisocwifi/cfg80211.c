@@ -739,7 +739,7 @@ static int sprdwl_add_cipher_key(struct sprdwl_vif *vif, bool pairwise,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0) || defined(CM311_CFG80211_WDEV)
 static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 				   int link_id, u8 key_index,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0) || defined(CM311_CFG80211_KEY_TYPE)
 				   enum nl80211_key_type type,
 #else
 				   bool pairwise,
@@ -748,7 +748,7 @@ static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct wireless_dev *wde
 				   struct key_params *params)
 {
 	struct sprdwl_vif *vif = netdev_priv(wdev->netdev);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0) || defined(CM311_CFG80211_KEY_TYPE)
 	bool pairwise = (type == NL80211_KEYTYPE_PAIRWISE);
 #endif
 
@@ -857,14 +857,14 @@ static int sprdwl_del_cipher_key(struct sprdwl_vif *vif, u8 key_index,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0) || defined(CM311_CFG80211_WDEV)
 static int sprdwl_cfg80211_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 				   int link_id, u8 key_index,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0) || defined(CM311_CFG80211_KEY_TYPE)
 				   enum nl80211_key_type type,
 #else
 				   bool pairwise,
 #endif
 				   const u8 *mac_addr)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0) || defined(CM311_CFG80211_KEY_TYPE)
 	bool pairwise = (type == NL80211_KEYTYPE_PAIRWISE);
 #endif
 

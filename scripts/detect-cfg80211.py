@@ -22,9 +22,9 @@ def detect(header):
             raise ValueError(f'Cannot find declaration of {name}')
         return match.group(1)
 
-    params = [member(name) for name in (
-        'add_key', 'del_key', 'add_station', 'del_station',
-        'change_station', 'get_station')]
+    key_params = [member('add_key'), member('del_key')]
+    params = key_params + [member(name) for name in (
+        'add_station', 'del_station', 'change_station', 'get_station')]
     params += [function('cfg80211_new_sta'), function('cfg80211_del_sta')]
     wdev = [bool(re.search(r'struct\s+wireless_dev\s*\*', p)) for p in params]
     ndev = [bool(re.search(r'struct\s+net_device\s*\*', p)) for p in params]
@@ -32,6 +32,12 @@ def detect(header):
         flags.append('-DCM311_CFG80211_WDEV')
     elif not all(ndev):
         raise ValueError('Mixed/unknown wdev and net_device API; inspect headers before building')
+
+    enum_keys = [bool(re.search(r'\benum\s+nl80211_key_type\b', p)) for p in key_params]
+    if all(enum_keys) and all(wdev):
+        flags.append('-DCM311_CFG80211_KEY_TYPE')
+    elif any(enum_keys):
+        raise ValueError('Unsupported cfg80211 key type API')
 
     roc = member('remain_on_channel')
     mgmt = member('mgmt_tx')
