@@ -457,6 +457,18 @@ int sprdwl_api_available_check(struct sprdwl_priv *priv,
 	p = &g_api_array[cmd_id];
 	drv_ver = p->drv_version;
 	fw_ver = p->fw_version;
+	/*
+	 * Commands needed to bring the firmware up must not be dropped when
+	 * it reports no API version for them (fw_ver 0).
+	 */
+	if (!fw_ver && (cmd_id == WIFI_CMD_DOWNLOAD_INI ||
+			cmd_id == WIFI_CMD_GET_INFO ||
+			cmd_id == WIFI_CMD_OPEN ||
+			cmd_id == WIFI_CMD_CLOSE)) {
+		pr_debug("allow cmd %u despite fw_ver=0 (drv=%u)\n",
+			 cmd_id, drv_ver);
+		return 0;
+	}
 	min_ver = min(drv_ver, fw_ver);
 	if (min_ver) {
 		if ((min_ver == drv_ver) ||

@@ -1,3 +1,10 @@
+# Keep other vendors' flags out of the Amlogic multi-architecture build.
+ifeq ($(CONFIG_AML_WIFI_DEVICE_UWE5621),y)
+override CONFIG_RK_WIFI_DEVICE_UWE5621 := n
+override CONFIG_RK_WIFI_DEVICE_UWE5622 := n
+override CONFIG_AW_WIFI_DEVICE_UWE5622 := n
+endif
+
 PWD := $(shell pwd)
 CURFOLDER ?= $(pwd)
 
@@ -11,16 +18,6 @@ firmware_file := $(PWD)/fw/wcnmodem.bin
 firmware_target := $(PWD)/fw/wcnmodem.bin.hex
 
 #### Global configs for each item ######
-ifeq ($(CONFIG_MESON_UWE5621),y)
-# Mainline Meson: MMC core owns power, reset and the external clock.
-# Do not enable CONFIG_AML_BOARD (vendor BSP APIs) or CONFIG_WCN_PARSE_DTS.
-export CONFIG_WCN_SDIO = y
-ccflags-y += -DCONFIG_MESON_UWE5621 -DCONFIG_CHECK_DRIVER_BY_CHIPID
-ccflags-y += -DCONFIG_SDIO_INBAND_INT -DCONFIG_SDIO_BLKSIZE_512
-BSP_CHIP_ID := uwe5621
-WCN_HW_TYPE := sdio
-endif
-
 ifeq ($(CFG_HI_WIFI_DEVICE_UWE5621),y)
 export CONFIG_WCN_SDIO = y
 #export CONFIG_WCN_USB = y
@@ -48,7 +45,7 @@ BSP_CHIP_ID := uwe5623
 WCN_HW_TYPE := usb
 endif
 
-ifeq ($(CFG_AML_WIFI_DEVICE_UWE5621),y)
+ifneq ($(filter y,$(CFG_AML_WIFI_DEVICE_UWE5621) $(CONFIG_AML_WIFI_DEVICE_UWE5621)),)
 export CONFIG_WCN_SDIO = y
 #export CONFIG_WCN_USB = y
 ccflags-y += -DCONFIG_CHECK_DRIVER_BY_CHIPID
@@ -85,6 +82,7 @@ WCN_HW_TYPE := sdio
 endif
 
 ifeq ($(CONFIG_AW_WIFI_DEVICE_UWE5622),y)
+# meson: AW_BOARD (no aml_gpio) + AML SDIO (no ADMA, blk 512)
 export CONFIG_WCN_SDIO = y
 #export CONFIG_WCN_USB = y
 #ccflags-y += -DCONFIG_CHECK_DRIVER_BY_CHIPID
@@ -218,31 +216,37 @@ endif
 ### ---------- Hisilicon end ---------- ###
 
 ### ---------- Amlogic start ---------- ###
-ifeq ($(CFG_AML_WIFI_DEVICE_UWE5621),y)
+ifneq ($(filter y,$(CFG_AML_WIFI_DEVICE_UWE5621) $(CONFIG_AML_WIFI_DEVICE_UWE5621)),)
 #### add cflag ######
+# Amlogic: local GPIO/reset stubs instead of the vendor aml_gpio API
 ccflags-y += -DCONFIG_AML_BOARD
+ccflags-y += -DGPIO_IRQ_LOW=0 -DGPIO_IRQ_HIGH=1
+ccflags-y += -include $(src)/include/linux/amlogic/aml_gpio_consumer.h
 #ccflags-y += -DCONFIG_WCN_PARSE_DTS
 #ccflags-y += -DCONFIG_WCN_CHIPEN
 #ccflags-y += -DCONFIG_WCN_RESET
-ccflags-y += -DCONFIG_WCN_RESET_PIN_CONNECTED
+#ccflags-y += -DCONFIG_WCN_RESET_PIN_CONNECTED
 ccflags-y += -DCONFIG_WCN_POWER_UP_DOWN
-ccflags-y += -DCONFIG_WCN_DOWNLOAD_FIRMWARE_FROM_HEX
+# Firmware is loaded from UNISOC_FW_PATH_CONFIG, not built in
+#ccflags-y += -DCONFIG_WCN_DOWNLOAD_FIRMWARE_FROM_HEX
 ccflags-y += -DCONFIG_BT_WAKE_HOST_EN
 #ccflags-y += -DCONFIG_WL_WAKE_HOST_EN
 #ccflags-y += -DCONFIG_WCN_RESUME_POWER_DOWN
 #ccflags-y += -DCONFIG_WCN_RESUME_KEEPPWR_RESETSDIO
 #ccflags-y += -DCONFIG_WCN_CHECK_MODULE_VENDOR
 #ccflags-y += -DCONFIG_WCN_LOOPCHECK
+# Keep CP log forwarding off: its traffic starves command RX on channel 22
 #ccflags-y += -DCONFIG_CPLOG_DEBUG
 #ccflags-y += -DCONFIG_MEM_PD
 #ccflags-y += -DCONFIG_SDIO_TX_ADMA_MODE
 #ccflags-y += -DCONFIG_SDIO_RX_ADMA_MODE
-ccflags-y += -DCONFIG_SDIO_INBAND_INT
-#ccflags-y += -DCONFIG_SDIO_INBAND_POLLING
+# meson host has no MMC_CAP_SDIO_IRQ and CP inband int never arrives -> RX polling
+#ccflags-y += -DCONFIG_SDIO_INBAND_INT
+ccflags-y += -DCONFIG_SDIO_INBAND_POLLING
 ccflags-y += -DCONFIG_SDIO_BLKSIZE_512
 #ccflags-y += -DCONFIG_SDIO_PWRSEQ
 
-driver_dependencies += $(firmware_target)
+#driver_dependencies += $(firmware_target)
 endif
 
 ifeq ($(CFG_AML_WIFI_DEVICE_UWE5622),y)
@@ -313,6 +317,7 @@ endif
 
 ### ---------- Allwinner start ---------- ###
 ifeq ($(CONFIG_AW_WIFI_DEVICE_UWE5622),y)
+# meson: AW_BOARD (no aml_gpio) + AML SDIO (no ADMA, blk 512)
 #### add cflag ######
 ccflags-y += -DCONFIG_AW_BOARD
 #ccflags-y += -DCONFIG_WCN_PARSE_DTS
@@ -328,14 +333,14 @@ ccflags-y += -DCONFIG_WL_WAKE_HOST_EN
 #ccflags-y += -DCONFIG_WCN_CHECK_MODULE_VENDOR
 #ifneq ($(TARGET_BUILD_VARIANT),user)
 ccflags-y += -DCONFIG_WCN_LOOPCHECK
-#ccflags-y += -DCONFIG_CPLOG_DEBUG
+ccflags-y += -DCONFIG_CPLOG_DEBUG
 #endif
 #ccflags-y += -DCONFIG_MEM_PD
-ccflags-y += -DCONFIG_SDIO_TX_ADMA_MODE
-ccflags-y += -DCONFIG_SDIO_RX_ADMA_MODE
+#ccflags-y += -DCONFIG_SDIO_TX_ADMA_MODE
+#ccflags-y += -DCONFIG_SDIO_RX_ADMA_MODE
 ccflags-y += -DCONFIG_SDIO_INBAND_INT
 #ccflags-y += -DCONFIG_SDIO_INBAND_POLLING
-#ccflags-y += -DCONFIG_SDIO_BLKSIZE_512
+ccflags-y += -DCONFIG_SDIO_BLKSIZE_512
 #ccflags-y += -DCONFIG_SDIO_PWRSEQ
 
 all_dependencies += install
@@ -390,6 +395,7 @@ $(MODULE_NAME)-$(CONFIG_WCN_SDIO) += \
 		    sleep/slp_mgr.o \
 		    sleep/slp_sdio.o \
 		    sleep/slp_test.o \
+		    platform/aml_wifi_stubs.o \
 		    platform/mem_pd_mgr.o
 
 KDIR ?= $(ANDROID_PRODUCT_OUT)/obj/KERNEL_OBJ

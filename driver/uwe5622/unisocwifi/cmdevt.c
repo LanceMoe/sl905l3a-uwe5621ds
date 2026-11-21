@@ -250,36 +250,36 @@ static const char *err2str(s8 error)
 #define SPRDWL_CMD_EXIT_VAL 0x8000
 int sprdwl_cmd_init(void)
 {
-    struct sprdwl_cmd *cmd = &g_sprdwl_cmd;
+	struct sprdwl_cmd *cmd = &g_sprdwl_cmd;
 
-    if (READ_ONCE(cmd->init_ok))
-        return -EBUSY;
-    cmd->data = NULL;
-    cmd->wake_lock = NULL;
+	if (READ_ONCE(cmd->init_ok))
+		return -EBUSY;
+	cmd->data = NULL;
 #ifdef CONFIG_PM_SLEEP
 #ifdef CONFIG_WIFI_RK_PM_PRIVATE_API
-    cmd->wake_lock = wakeup_source_register(sprdwl_dev, "Wi-Fi_cmd_wakelock");
+	cmd->wake_lock = wakeup_source_register(sprdwl_dev,
+						"Wi-Fi_cmd_wakelock");
 #else
-    cmd->wake_lock = wakeup_source_register(NULL, "Wi-Fi_cmd_wakelock");
+	cmd->wake_lock = wakeup_source_register(NULL,"Wi-Fi_cmd_wakelock");
 #endif
-    if (!cmd->wake_lock)
-        return -ENOMEM;
+	if (!cmd->wake_lock)
+		return -ENOMEM;
 #endif
-    /* !PM_SLEEP deliberately has no wakeup source; it still needs a command
-     * mutex and completion. Never treat the kernel's NULL stub as a failure.
-     */
-    atomic_set(&cmd->refcnt, 0);
-    spin_lock_init(&cmd->lock);
-    mutex_init(&cmd->cmd_lock);
-    init_completion(&cmd->completed);
-    WRITE_ONCE(cmd->init_ok, 1);
-    return 0;
+
+	atomic_set(&cmd->refcnt, 0);
+	spin_lock_init(&cmd->lock);
+	mutex_init(&cmd->cmd_lock);
+	init_completion(&cmd->completed);
+	WRITE_ONCE(cmd->init_ok, 1);
+	return 0;
 }
 
 void sprdwl_cmd_wake_upall(void)
 {
-	if (READ_ONCE(g_sprdwl_cmd.init_ok))
-		complete(&g_sprdwl_cmd.completed);
+	struct sprdwl_cmd *cmd = &g_sprdwl_cmd;
+
+	if (READ_ONCE(cmd->init_ok))
+		complete(&cmd->completed);
 }
 
 static void sprdwl_cmd_set(struct sprdwl_cmd_hdr *hdr)
@@ -318,8 +318,10 @@ void sprdwl_cmd_deinit(void)
 	unsigned long timeout;
 	struct sprdwl_cmd *cmd = &g_sprdwl_cmd;
 
+	/* probe-fail path may reach here before sprdwl_cmd_init */
 	if (!READ_ONCE(cmd->init_ok))
 		return;
+
 	atomic_add(SPRDWL_CMD_EXIT_VAL, &cmd->refcnt);
 	complete(&cmd->completed);
 	timeout = jiffies + msecs_to_jiffies(1000);
@@ -421,7 +423,7 @@ struct sprdwl_msg_buf *__sprdwl_cmd_getbuf(struct sprdwl_priv *priv,
 	if (cmd_id >= WIFI_CMD_OPEN) {
 		vif = ctx_id_to_vif(priv, ctx_id);
 		if (!vif)
-			wl_err("%s cant't get vif, ctx_id: %d\n",
+			wl_debug("%s cant't get vif, ctx_id: %d\n",
 			       __func__, ctx_id);
 		else
 			mode =  vif->mode;
@@ -566,13 +568,9 @@ int sprdwl_cmd_send_recv(struct sprdwl_priv *priv,
 	tx_msg = (struct sprdwl_tx_msg *)intf->sprdwl_tx;
 
 	ret = sprdwl_api_available_check(priv, msg);
-	if (!ret)
-		ret = sprdwl_cmd_lock(cmd);
-	if (ret) {
-		void *tran_data = msg->tran_data;
-
+	if (ret || sprdwl_cmd_lock(cmd)) {
 		sprdwl_intf_free_msg_buf(priv, msg);
-		kfree(tran_data);
+		kfree(msg->tran_data);
 		if (rlen)
 			*rlen = 0;
 		if (ret)
@@ -623,10 +621,10 @@ int sprdwl_cmd_send_recv(struct sprdwl_priv *priv,
 		}
 	} else {
 		wl_err("ctx_id:%d cmd: %s[%d] rsp timeout (mstime = %d), num=%d\n",
-		       ctx_id, cmd2str(cmd_id), cmd_id, cmd->mstime,
+		       ctx_id, cmd2str(cmd_id), cmd_id, le32_to_cpu(hdr->mstime),
 		       tx_msg->cmd_send);
 		if (cmd_id == WIFI_CMD_CLOSE) {
-			sprdwl_atcmd_assert(priv, ctx_id, cmd_id, CMD_RSP_TIMEOUT_ERROR);
+			wl_err("skip assert on CLOSE timeout\n");
 			sprdwl_cmd_unlock(cmd);
 			return ret;
 		}
@@ -634,15 +632,13 @@ int sprdwl_cmd_send_recv(struct sprdwl_priv *priv,
 		if (vif != NULL) {
 			intf = (struct sprdwl_intf *)(vif->priv->hw_priv);
 			tx_msg = (struct sprdwl_tx_msg *)intf->sprdwl_tx;
-#ifndef CONFIG_MESON_UWE5621
 			if (intf->cp_asserted == 0 &&
-				tx_msg->hang_recovery_status == HANG_RECOVERY_END)
-				sprdwl_send_assert_cmd(vif, cmd_id, CMD_RSP_TIMEOUT_ERROR);
-#else
-			(void)tx_msg;
-			wl_err("cmd timeout without CP reset (ctx %u cmd %u)\n",
-			       ctx_id, cmd_id);
-#endif
+				tx_msg->hang_recovery_status == HANG_RECOVERY_END) {
+				/* Do not assert the CP on a command timeout: that
+				 * sets card_dump and stops SDIO RX (-ENODEV) for good.
+				 */
+				wl_err("skip assert on %s timeout\n", cmd2str(cmd_id));
+			}
 			sprdwl_put_vif(vif);
 		}
 	}
@@ -665,13 +661,10 @@ static int sprdwl_cmd_send_recv_no_wait(struct sprdwl_priv *priv,
 	struct sprdwl_cmd_hdr *hdr;
 	u8 ctx_id;
 
-	ret = sprdwl_cmd_lock(cmd);
-	if (ret) {
-		void *tran_data = msg->tran_data;
-
+	if (sprdwl_cmd_lock(cmd)) {
 		wl_err("%s, %d, error!\n", __func__, __LINE__);
 		sprdwl_intf_free_msg_buf(priv, msg);
-		kfree(tran_data);
+		kfree(msg->tran_data);
 		goto out;
 	}
 
@@ -709,8 +702,6 @@ int sprdwl_sync_version(struct sprdwl_priv *priv)
 	sprdwl_fill_drv_api_version(priv, drv_api);
 
 	ret = sprdwl_cmd_send_recv(priv, msg, CMD_WAIT_TIMEOUT, r_buf, &r_len);
-	if (!ret && r_len != sizeof(*fw_api))
-		return -EPROTO;
 	if (!ret && r_len) {
 		fw_api = (struct sprdwl_cmd_api_t *)r_buf;
 		/*fill fw api version to priv got from firmware*/
@@ -752,45 +743,74 @@ static int sprdwl_down_ini_cmd(struct sprdwl_priv *priv,
 	return ret;
 }
 
-int sprdwl_download_ini(struct sprdwl_priv *priv)
+/*
+ * INI download failures are logged but do not assert the CP: an assert
+ * sets card_dump and stops SDIO RX until the next power cycle.
+ */
+void sprdwl_download_ini(struct sprdwl_priv *priv)
 {
-    struct wifi_conf_t *wifi_data;
-    struct wifi_conf_sec1_t *sec1;
-    struct wifi_conf_sec2_t *sec2;
-    int ret;
+#define SEC1	1
+#define SEC2	2
+#define SEC3	3
 
-    if (sprdwl_get_ini_status(priv))
-        return 0;
-    wifi_data = kzalloc(sizeof(*wifi_data), GFP_KERNEL);
-    if (!wifi_data)
-        return -ENOMEM;
-    ret = get_wifi_config_param(wifi_data);
-    if (ret) {
-        pr_err("sprdwl: reading RF configuration failed: %d\n", ret);
-        goto out;
-    }
-    sec1 = (struct wifi_conf_sec1_t *)wifi_data;
-    sec2 = (struct wifi_conf_sec2_t *)(&wifi_data->tx_scale);
-    ret = sprdwl_down_ini_cmd(priv, (u8 *)sec1, sizeof(*sec1), 1);
-    if (ret) {
-        pr_err("sprdwl: RF configuration section 1 failed: %d\n", ret);
-        goto out;
-    }
-    ret = sprdwl_down_ini_cmd(priv, (u8 *)sec2, sizeof(*sec2), 2);
-    if (ret) {
-        pr_err("sprdwl: RF configuration section 2 failed: %d\n", ret);
-        goto out;
-    }
-    if (wifi_data->rf_config.rf_data_len) {
-        ret = sprdwl_down_ini_cmd(priv, wifi_data->rf_config.rf_data,
-                                wifi_data->rf_config.rf_data_len, 3);
-        if (ret)
-            pr_err("sprdwl: RF configuration section 3 failed: %d\n", ret);
-    }
-out:
-    /* Probe must fail cleanly, not reset CP2 and continue on invalid state. */
-    kfree(wifi_data);
-    return ret;
+	int ret;
+	struct wifi_conf_t *wifi_data;
+	struct wifi_conf_sec1_t *sec1;
+	struct wifi_conf_sec2_t *sec2;
+
+	wl_debug("%s enter:", __func__);
+	/*if ini file has been download already, return*/
+	if (sprdwl_get_ini_status(priv)) {
+		wl_err("RF ini download already, skip!\n");
+		return;
+	}
+
+	wifi_data = kzalloc(sizeof(struct wifi_conf_t), GFP_KERNEL);
+	/*init INI data struct */
+	/*got ini data from file*/
+	ret = get_wifi_config_param(wifi_data);
+	if (ret) {
+		wl_err("load ini data failed, return\n");
+		kfree(wifi_data);
+		return;
+	}
+
+	wl_info("total config len:%ld,sec1 len:%ld, sec2 len:%ld\n",
+		(long unsigned int)sizeof(wifi_data), (long unsigned int)sizeof(*sec1),
+		(long unsigned int)sizeof(*sec2));
+	/*devide wifi_conf into sec1 and sec2 since it's too large*/
+	sec1 = (struct wifi_conf_sec1_t *)wifi_data;
+	sec2 = (struct wifi_conf_sec2_t *)(&wifi_data->tx_scale);
+
+	wl_info("download the first section of config file\n");
+	ret = sprdwl_down_ini_cmd(priv, (uint8_t *)sec1, sizeof(*sec1), SEC1);
+	if (ret) {
+		wl_err("download the first section of ini fail,return\n");
+		kfree(wifi_data);
+		return;
+	}
+
+	wl_info("download the second section of config file\n");
+	ret = sprdwl_down_ini_cmd(priv, (uint8_t *)sec2, sizeof(*sec2), SEC2);
+	if (ret) {
+		wl_err("download the second section of ini fail,return\n");
+		kfree(wifi_data);
+		return;
+	}
+
+	if (wifi_data->rf_config.rf_data_len) {
+		wl_info("download the third section of config file\n");
+		wl_info("rf_data_len = %d\n", wifi_data->rf_config.rf_data_len);
+		ret = sprdwl_down_ini_cmd(priv, wifi_data->rf_config.rf_data,
+				wifi_data->rf_config.rf_data_len, SEC3);
+		if (ret) {
+			wl_err("download the third section of ini fail,return\n");
+			kfree(wifi_data);
+			return;
+		}
+	}
+
+	kfree(wifi_data);
 }
 
 int sprdwl_get_fw_info(struct sprdwl_priv *priv)

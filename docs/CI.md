@@ -54,11 +54,11 @@ Actions 页面下载 `source-and-tests` 或 `arm64-modules-<内核版本>` 产�
 将所有项目和工作流文件提交、推送后，再推送版本标签：
 
 ```bash
-git tag v0.8.0
-git push origin v0.8.0
+git tag v0.9.0
+git push origin v0.9.0
 ```
 
-`v0.8.0` 必须与 `VERSION` 中的 `0.8.0` 一致，否则检查阶段就会失败。
+`v0.9.0` 必须与 `VERSION` 中的 `0.9.0` 一致，否则检查阶段就会失败。
 之后自动运行完整检查和 ARM64 编译，再从**本次运行**下载源码/集成包和内核二进制包：
 
 1. 验证每个外层归档 SHA-256、内部逐文件清单及版本/类型/内核身份。
@@ -106,7 +106,7 @@ Actions → Variables 设置三项非秘密变量：
 **在推送版本标签前配置好**，标签自动构建与 Release 会使用该输入，并按实际内核命名附件。
 若当前版本已发布，先更新 VERSION，使用新标签发布；不要移动或覆盖旧标签。
 
-没有 6.18.37 头文件时，你现有的已构建 v8 模块仍可通过集成更新包安装。
+构建 6.18.37 模块需要该版本的完整头文件和符号表。
 这份工作流不会生成冒用 6.18.37 版本字符串的预编译模块。
 
 ## 本地复现
@@ -135,9 +135,9 @@ python3 scripts/package.py --kind integration
 python3 scripts/package.py --kind modules --kernel-release 6.18.56-ophub
 ```
 
-- `cm311-uwe5621ds-0.8.0-source.tar.gz`：项目和应用补丁后的源码，可离线开始构建。
-- `cm311-uwe5621ds-0.8.0-integration.tar.gz`：给已有 v8 目录更新安装/CI/文档，不覆盖模块和工具链。
-- `cm311-uwe5621ds-0.8.0-<内核版本>.tar.gz`：已构建模块加对应项目和源码。
+- `cm311-uwe5621ds-0.9.0-source.tar.gz`：项目和应用补丁后的源码，可离线开始构建。
+- `cm311-uwe5621ds-0.9.0-integration.tar.gz`：系统集成文件及源码，不含预编译模块。
+- `cm311-uwe5621ds-0.9.0-<内核版本>.tar.gz`：已构建模块加对应项目和源码。
 
 每个文件都有 `.sha256`；归档内 `PACKAGE_MANIFEST.json` 记录类型、内核、上游提交和逐文件哈希。
 固定文件内容相同时打包结果可复现（归档时间、所有者及文件模式固定）。

@@ -20,11 +20,10 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/kthread.h>
-#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 #include <linux/gpio/consumer.h>
 #include <linux/of.h>
 #else
@@ -32,6 +31,7 @@
 #endif
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
+#include <linux/scatterlist.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/core.h>
 #include <linux/mmc/host.h>
@@ -54,6 +54,50 @@ extern int wifi_irq_trigger_level(void);
 extern void sdio_reinit(void);
 extern void sdio_clk_always_on(int on);
 extern void sdio_set_max_reqsz(unsigned int size);
+
+/* Mainline meson: mmc_power_* helpers are not exported to modules.
+ * Use mmc_hw_reset (exported) for restore/up; power_off/save become no-ops
+ * (chip EN is driven by extern_wifi_set_enable / pwrseq reset-gpios).
+ */
+static inline void sdiohal_claimed_hw_reset(struct mmc_host *host)
+{
+	struct sdio_func *f = host->card ? host->card->sdio_func[0] : NULL;
+
+	if (f)
+		sdio_claim_host(f);
+	mmc_hw_reset(host->card);
+	if (f)
+		sdio_release_host(f);
+}
+
+static inline void sdiohal_mmc_power_restore_host(struct mmc_host *host)
+{
+	/* 6.18+: mmc_hw_reset(struct mmc_card *) */
+	if (host && host->card)
+		sdiohal_claimed_hw_reset(host);
+}
+
+static inline void sdiohal_mmc_power_up(struct mmc_host *host, u32 ocr)
+{
+	(void)ocr;
+	if (host && host->card)
+		sdiohal_claimed_hw_reset(host);
+}
+
+static inline void sdiohal_mmc_power_off(struct mmc_host *host)
+{
+	(void)host;
+}
+
+static inline void sdiohal_mmc_power_save_host(struct mmc_host *host)
+{
+	(void)host;
+}
+
+#define mmc_power_restore_host sdiohal_mmc_power_restore_host
+#define mmc_power_up sdiohal_mmc_power_up
+#define mmc_power_off sdiohal_mmc_power_off
+#define mmc_power_save_host sdiohal_mmc_power_save_host
 #endif
 
 //#ifdef CONFIG_RK_BOARD
@@ -83,54 +127,6 @@ extern int sunxi_wlan_get_oob_irq_flags(void);
 static int (*scan_card_notify)(void);
 struct sdiohal_data_t *sdiohal_data;
 static struct sdio_driver sdiohal_driver;
-#ifdef CONFIG_MESON_UWE5621
-static atomic_t cm311_sdio_irqs = ATOMIC_INIT(0);
-static atomic_t cm311_packet_tx = ATOMIC_INIT(0);
-static atomic_t cm311_packet_rx = ATOMIC_INIT(0);
-static atomic_t cm311_packet_errors = ATOMIC_INIT(0);
-static atomic_t cm311_rx_poll_timeouts = ATOMIC_INIT(0);
-static atomic_t cm311_rx_no_progress = ATOMIC_INIT(0);
-static unsigned int cm311_packet_limit;
-module_param_named(sdio_packet_limit, cm311_packet_limit, uint, 0444);
-static int cm311_counter_get(char *buffer, const struct kernel_param *kp)
-{
-    return scnprintf(buffer, PAGE_SIZE, "%d\n", atomic_read(kp->arg));
-}
-static const struct kernel_param_ops cm311_counter_ops = {
-    .get = cm311_counter_get,
-};
-module_param_cb(sdio_irq_count, &cm311_counter_ops, &cm311_sdio_irqs, 0444);
-module_param_cb(sdio_packet_tx, &cm311_counter_ops, &cm311_packet_tx, 0444);
-module_param_cb(sdio_packet_rx, &cm311_counter_ops, &cm311_packet_rx, 0444);
-module_param_cb(sdio_packet_errors, &cm311_counter_ops, &cm311_packet_errors, 0444);
-module_param_cb(sdio_rx_poll_timeouts, &cm311_counter_ops, &cm311_rx_poll_timeouts, 0444);
-module_param_cb(sdio_rx_no_progress, &cm311_counter_ops, &cm311_rx_no_progress, 0444);
-
-void sdiohal_rx_no_progress(void)
-{
-    atomic_inc(&cm311_rx_no_progress);
-}
-
-void sdiohal_rx_poll_timeout(void)
-{
-    atomic_inc(&cm311_rx_poll_timeouts);
-}
-
-static void cm311_rx_poll_start(struct sdiohal_data_t *p_data)
-{
-    /* CM311 returned queued AT and Wi-Fi replies only after a direct FIFO
-     * read. Keep in-band IRQ handling, but bound the wait on hosts without
-     * native SDIO IRQ support. Do not read packet FIFOs during ROM download.
-     */
-    if (p_data->irq_type != SDIOHAL_RX_INBAND_IRQ ||
-        (p_data->sdio_dev_host->caps & MMC_CAP_SDIO_IRQ))
-        return;
-    WRITE_ONCE(p_data->rx_poll_active, true);
-    sdiohal_info("RX IRQ fallback armed: %u ms after firmware startup\n",
-                 SDIOHAL_RX_POLL_MS);
-    sdiohal_rx_up();
-}
-#endif
 
 static int sdiohal_card_lock(struct sdiohal_data_t *p_data,
 	const char *func)
@@ -234,7 +230,7 @@ static void sdiohal_abort(void)
 
 	sdiohal_info("sdiohal_abort\n");
 
-#ifdef CONFIG_AW_BOARD
+#ifdef CONFIG_ARCH_SUNXI
 	sprdwcn_bus_set_carddump_status(true);
 	return;
 #endif
@@ -251,6 +247,85 @@ static void sdiohal_abort(void)
 	sdiohal_info("after abort, SDIO_VER_CCCR:0x%x\n", val);
 
 	sdio_release_host(p_data->sdio_func[FUNC_0]);
+}
+
+unsigned int sdiohal_rx_xfer_limit;
+module_param_named(xfer_max, sdiohal_rx_xfer_limit, uint, 0644);
+MODULE_PARM_DESC(xfer_max,
+		 "Max bytes per SDIO RX read (0: 1536 on dram-access-quirk hosts, else 32768)");
+
+unsigned int sdiohal_tx_xfer_limit;
+module_param_named(tx_xfer_max, sdiohal_tx_xfer_limit, uint, 0644);
+MODULE_PARM_DESC(tx_xfer_max,
+		 "Max bytes per packed SDIO TX write (0: 65536 on hosts without the dram-access quirk, else same as xfer_max)");
+
+/*
+ * The build selects RX polling on Amlogic boards.  Hosts that support SDIO
+ * interrupts (cap-sdio-irq) can use in-band interrupts instead.
+ */
+static int sdiohal_irq_type_param = -1;
+module_param_named(irq_type, sdiohal_irq_type_param, int, 0444);
+MODULE_PARM_DESC(irq_type,
+		 "RX interrupt mode: 1 in-band SDIO interrupt, 2 polling (-1: build default)");
+
+static void sdiohal_init_host_tuning(struct mmc_host *host)
+{
+	bool quirk = of_property_read_bool(mmc_dev(host)->of_node,
+					   "amlogic,dram-access-quirk");
+
+	if (!sdiohal_rx_xfer_limit)
+		sdiohal_rx_xfer_limit = quirk ? SDIOHAL_XFER_MAX_QUIRK :
+					SDIOHAL_RX_XFER_MAX_DEFAULT;
+	if (!sdiohal_tx_xfer_limit && !quirk)
+		sdiohal_tx_xfer_limit = SDIOHAL_TX_XFER_MAX_DEFAULT;
+	sdiohal_rx_init_tuning(quirk);
+
+	sdiohal_info("%s: %sdram-access quirk, rx xfer max %u, tx xfer max %u\n",
+		     mmc_hostname(host), quirk ? "" : "no ",
+		     sdiohal_rx_xfer_max(), sdiohal_tx_xfer_max());
+}
+
+/* RX refusal recovery: CMD53 read claiming @claim blocks, transfer 3, then CCCR abort */
+void sdiohal_crafted_read(unsigned int claim)
+{
+	struct sdiohal_data_t *p_data = sdiohal_get_data();
+	struct sdio_func *func = p_data->sdio_func[FUNC_1];
+	struct mmc_host *host = func->card->host;
+	struct mmc_request mrq = {};
+	struct mmc_command cmd = {};
+	struct mmc_data data = {};
+	struct scatterlist sg;
+	unsigned char *buf;
+	int aerr = 0;
+	unsigned int *w;
+
+	buf = kzalloc(1536, GFP_KERNEL);
+	if (!buf)
+		return;
+	sg_init_one(&sg, buf, 1536);
+	data.blksz = 512;
+	data.blocks = 3;
+	data.flags = MMC_DATA_READ;
+	data.sg = &sg;
+	data.sg_len = 1;
+	cmd.opcode = 53;
+	cmd.arg = (1 & 0x7) << 28;	/* read, fn1 */
+	cmd.arg |= 1 << 27;		/* block mode */
+	cmd.arg |= (SDIOHAL_PK_MODE_ADDR & 0x1FFFF) << 9;	/* fixed address */
+	cmd.arg |= claim & 0x1FF;
+	cmd.flags = MMC_RSP_SPI_R5 | MMC_RSP_R5 | MMC_CMD_ADTC;
+	mrq.cmd = &cmd;
+	mrq.data = &data;
+	sdio_claim_host(func);
+	mmc_set_data_timeout(&data, func->card);
+	mmc_wait_for_req(host, &mrq);
+	sdio_writeb(p_data->sdio_func[FUNC_0], VAL_ABORT_TRANS, SDIOHAL_CCCR_ABORT, &aerr);
+	sdio_release_host(func);
+	w = (unsigned int *)buf;
+	pr_debug("rx_recov: crafted claim=%u cmd_err=%d dat_err=%d xfered=%u abort_err=%d h=%16ph w380=%08x w381=%08x w382=%08x w383=%08x\n",
+		 claim, cmd.error, data.error, data.bytes_xfered, aerr, buf,
+		 w[380], w[381], w[382], w[383]);
+	kfree(buf);
 }
 
 /* Get Success Transfer pac num Before Abort */
@@ -287,39 +362,6 @@ unsigned int sdiohal_get_trans_pac_num(void)
 	return p_data->success_pac_num;
 }
 
-/* SDMA trailers describe ONE CMD53. The core may split larger readsb/writesb
- * requests, which consumes multiple CP packets and loses intermediate trailers.
- * In G12A SRAM mode the host allows only 3 x 512 bytes per command.
- */
-unsigned int sdiohal_packet_limit(void)
-{
-    struct sdiohal_data_t *p_data = sdiohal_get_data();
-    struct sdio_func *func = p_data ? p_data->sdio_func[FUNC_1] : NULL;
-    struct mmc_host *host;
-    unsigned int limit, blocks, bytes, block;
-
-    if (!func || !func->cur_blksize)
-        return 0;
-    host = func->card->host;
-    block = func->cur_blksize;
-    blocks = min_t(unsigned int, host->max_blk_count, 511U);
-    limit = min_t(unsigned int, host->max_req_size, host->max_seg_size);
-    limit = min(limit, blocks * block);
-    limit = min_t(unsigned int, limit, SDIOHAL_TX_SENDBUF_LEN);
-    if (!func->card->cccr.multi_block) {
-        bytes = min_t(unsigned int, host->max_blk_size, func->max_blksize);
-        bytes = min(bytes, (func->card->quirks &
-                           MMC_QUIRK_BROKEN_BYTE_MODE_512) ? 511U : 512U);
-        limit = min(limit, bytes);
-    }
-    /* The experimental streaming host extends RX only. */
-    if (host->parent->driver &&
-        !strcmp(host->parent->driver->name, "cm311-sdio-rx"))
-        limit = min(limit, 1536U);
-    return (limit / block) * block;
-}
-EXPORT_SYMBOL_GPL(sdiohal_packet_limit);
-
 int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
@@ -327,15 +369,6 @@ int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen)
 	struct timespec tm_begin, tm_end;
 	static long time_total_ns;
 	static int times_count;
-
-#ifdef CONFIG_MESON_UWE5621
-    if (!datalen || datalen % SDIOHAL_BLK_SIZE ||
-        datalen > sdiohal_packet_limit()) {
-        pr_err_ratelimited("sdiohal: reject split packet transfer %u (limit %u)\n",
-                           datalen, sdiohal_packet_limit());
-        return -EMSGSIZE;
-    }
-#endif
 
 	getnstimeofday(&tm_begin);
 	if (unlikely(p_data->card_dump_flag == true)) {
@@ -351,19 +384,12 @@ int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen)
 	if (sdiohal_card_lock(p_data, __func__))
 		return -1;
 
-#ifdef CONFIG_MESON_UWE5621
-	atomic_inc(&cm311_packet_tx);
-#endif
 	sdiohal_resume_check();
 	sdiohal_op_enter();
 	sdio_claim_host(p_data->sdio_func[FUNC_1]);
 	ret = sdio_writesb(p_data->sdio_func[FUNC_1],
 		SDIOHAL_PK_MODE_ADDR, src, datalen);
 	sdio_release_host(p_data->sdio_func[FUNC_1]);
-#ifdef CONFIG_MESON_UWE5621
-	if (ret)
-		atomic_inc(&cm311_packet_errors);
-#endif
 	if (ret != 0) {
 		sdiohal_success_trans_pac_num();
 		sdiohal_abort();
@@ -384,17 +410,6 @@ int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen)
 	return ret;
 }
 
-unsigned int sdiohal_rx_packet_limit(void)
-{
-    struct sdiohal_data_t *p = sdiohal_get_data();
-    struct mmc_host *host = p->sdio_func[FUNC_1]->card->host;
-
-    if (host->parent->driver &&
-        !strcmp(host->parent->driver->name, "cm311-sdio-rx"))
-        return min_t(unsigned int, host->max_req_size, 4096U);
-    return sdiohal_packet_limit();
-}
-
 int sdiohal_sdio_pt_read(unsigned char *src, unsigned int datalen)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
@@ -402,15 +417,6 @@ int sdiohal_sdio_pt_read(unsigned char *src, unsigned int datalen)
 	struct timespec tm_begin, tm_end;
 	static long time_total_ns;
 	static int times_count;
-
-#ifdef CONFIG_MESON_UWE5621
-    if (!datalen || datalen % SDIOHAL_BLK_SIZE ||
-        datalen > sdiohal_rx_packet_limit()) {
-        pr_err_ratelimited("sdiohal: reject split packet transfer %u (limit %u)\n",
-                           datalen, sdiohal_rx_packet_limit());
-        return -EMSGSIZE;
-    }
-#endif
 
 	getnstimeofday(&tm_begin);
 
@@ -422,19 +428,12 @@ int sdiohal_sdio_pt_read(unsigned char *src, unsigned int datalen)
 	if (sdiohal_card_lock(p_data, __func__))
 		return -1;
 
-#ifdef CONFIG_MESON_UWE5621
-	atomic_inc(&cm311_packet_rx);
-#endif
 	sdiohal_resume_check();
 	sdiohal_op_enter();
 	sdio_claim_host(p_data->sdio_func[FUNC_1]);
 	ret = sdio_readsb(p_data->sdio_func[FUNC_1], src,
 		SDIOHAL_PK_MODE_ADDR, datalen);
 	sdio_release_host(p_data->sdio_func[FUNC_1]);
-#ifdef CONFIG_MESON_UWE5621
-	if (ret)
-		atomic_inc(&cm311_packet_errors);
-#endif
 	if (ret != 0)
 		sdiohal_abort();
 	sdiohal_op_leave();
@@ -925,11 +924,9 @@ int sdiohal_writel(unsigned int system_addr, void *buf)
 	if (sdiohal_card_lock(p_data, __func__))
 		return -1;
 
-#ifdef CONFIG_AW_BOARD
-	if (p_data->dt_rw_fail) {
-		sdiohal_card_unlock(p_data);
-		return -EIO;
-	}
+#ifdef CONFIG_ARCH_SUNXI
+	if (p_data->dt_rw_fail)
+		return -1;
 #endif
 
 	sdiohal_resume_check();
@@ -956,9 +953,7 @@ int sdiohal_writel(unsigned int system_addr, void *buf)
 		sdiohal_err("dt writel fail ret:%d, system_addr=0x%x\n",
 			    ret, system_addr);
 		p_data->dt_rw_fail = 1;
-#ifndef CONFIG_MESON_UWE5621
 		sdiohal_dump_aon_reg();
-#endif
 		sdiohal_abort();
 	}
 	sdiohal_card_unlock(p_data);
@@ -974,11 +969,9 @@ int sdiohal_readl(unsigned int system_addr, void *buf)
 	if (sdiohal_card_lock(p_data, __func__))
 		return -1;
 
-#ifdef CONFIG_AW_BOARD
-	if (p_data->dt_rw_fail) {
-		sdiohal_card_unlock(p_data);
-		return -EIO;
-	}
+#ifdef CONFIG_ARCH_SUNXI
+	if (p_data->dt_rw_fail)
+		return -1;
 #endif
 
 	sdiohal_resume_check();
@@ -1028,9 +1021,7 @@ int sdiohal_readl(unsigned int system_addr, void *buf)
 		sdiohal_err("dt readl fail ret:%d, system_addr=0x%x\n",
 			    ret, system_addr);
 		p_data->dt_rw_fail = 1;
-#ifndef CONFIG_MESON_UWE5621
 		sdiohal_dump_aon_reg();
-#endif
 		sdiohal_abort();
 	}
 	sdiohal_card_unlock(p_data);
@@ -1076,11 +1067,9 @@ int sdiohal_dt_write(unsigned int system_addr,
 	if (sdiohal_card_lock(p_data, __func__))
 		return -1;
 
-#ifdef CONFIG_AW_BOARD
-	if (p_data->dt_rw_fail) {
-		sdiohal_card_unlock(p_data);
-		return -EIO;
-	}
+#ifdef CONFIG_ARCH_SUNXI
+	if (p_data->dt_rw_fail)
+		return -1;
 #endif
 
 	sdiohal_resume_check();
@@ -1117,9 +1106,7 @@ int sdiohal_dt_write(unsigned int system_addr,
 		sdiohal_err("dt write fail ret:%d, system_addr=0x%x\n",
 			    ret, system_addr);
 		p_data->dt_rw_fail = 1;
-#ifndef CONFIG_MESON_UWE5621
 		sdiohal_dump_aon_reg();
-#endif
 		sdiohal_abort();
 	}
 	sdiohal_card_unlock(p_data);
@@ -1138,11 +1125,9 @@ int sdiohal_dt_read(unsigned int system_addr, void *buf,
 	if (sdiohal_card_lock(p_data, __func__))
 		return -1;
 
-#ifdef CONFIG_AW_BOARD
-	if (p_data->dt_rw_fail) {
-		sdiohal_card_unlock(p_data);
-		return -EIO;
-	}
+#ifdef CONFIG_ARCH_SUNXI
+	if (p_data->dt_rw_fail)
+		return -1;
 #endif
 
 	sdiohal_resume_check();
@@ -1178,9 +1163,7 @@ int sdiohal_dt_read(unsigned int system_addr, void *buf,
 		sdiohal_err("dt read fail ret:%d, system_addr=0x%x\n",
 			    ret, system_addr);
 		p_data->dt_rw_fail = 1;
-#ifndef CONFIG_MESON_UWE5621
 		sdiohal_dump_aon_reg();
-#endif
 		sdiohal_abort();
 	}
 	sdiohal_card_unlock(p_data);
@@ -1348,7 +1331,7 @@ static int sdiohal_enable_slave_irq(void)
 	return 0;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 static int sdiohal_host_irq_init(struct gpio_desc *desc)
 #else
 static int sdiohal_host_irq_init(unsigned int irq_gpio_num)
@@ -1371,7 +1354,7 @@ static int sdiohal_host_irq_init(unsigned int irq_gpio_num)
 		     ((p_data->irq_trigger_type == IRQF_TRIGGER_LOW) ?
 		     "low" : "high"));
 #else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 	if (IS_ERR_OR_NULL(desc))
 		return ret;
 
@@ -1516,7 +1499,7 @@ static int sdiohal_parse_dt(void)
 		p_data->irq_type = SDIOHAL_RX_POLLING;
 		else {
 			p_data->irq_type = SDIOHAL_RX_EXTERNAL_IRQ;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 			p_data->gpio_num = fwnode_gpiod_get_index(
 				of_fwnode_handle(np), "sdio-ext-int-gpio", 0,
 				GPIOD_IN, "sdiohal-ext-irq");
@@ -1535,7 +1518,7 @@ static int sdiohal_parse_dt(void)
 #endif
 		}
 	#else /* else of CONFIG_WCN_PARSE_DTS */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 		p_data->gpio_num = NULL;
 #else
 		p_data->gpio_num = 0;
@@ -1551,7 +1534,11 @@ static int sdiohal_parse_dt(void)
 		p_data->blk_size = true;
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+	if (sdiohal_irq_type_param == SDIOHAL_RX_INBAND_IRQ ||
+	    sdiohal_irq_type_param == SDIOHAL_RX_POLLING)
+		p_data->irq_type = sdiohal_irq_type_param;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 	sdiohal_info("%s adma_tx:%d, adma_rx:%d, pwrseq:%d, irq type:%s, "
 		     "gpio_num:%p, blksize:%d\n",
 		     __func__, p_data->adma_tx_enable,
@@ -1654,9 +1641,6 @@ static void sdiohal_irq_handler_data(struct sdio_func *func)
 
 	sdiohal_debug("%s entry\n", __func__);
 
-#ifdef CONFIG_MESON_UWE5621
-	atomic_inc(&cm311_sdio_irqs);
-#endif
 	if (!WCN_CARD_EXIST(&p_data->xmit_cnt)) {
 		sdiohal_err("%s line %d not have card\n", __func__, __LINE__);
 		return;
@@ -1906,9 +1890,6 @@ int sdiohal_runtime_get(void)
 			(p_data->irq_num > 0))
 			enable_irq(p_data->irq_num);
 
-#ifdef CONFIG_MESON_UWE5621
-        cm311_rx_poll_start(p_data);
-#endif
 		return 0;
 	}
 
@@ -1935,45 +1916,19 @@ int sdiohal_runtime_get(void)
 		enable_irq(p_data->irq_num);
 	sdiohal_info("sdihal: %s ret:%d\n", __func__, ret);
 
-#ifdef CONFIG_MESON_UWE5621
-    cm311_rx_poll_start(p_data);
-#endif
 	return ret;
 }
-
-/* Never manufacture a drained counter: an in-flight owner may still use it. */
-static int sdiohal_wait_idle(struct sdiohal_data_t *p_data)
-{
-	unsigned long deadline = jiffies + msecs_to_jiffies(2000);
-	int count;
-
-	while ((count = atomic_read(&p_data->xmit_cnt)) > 0 &&
-	       count < SDIOHAL_REMOVE_CARD_VAL) {
-		if (time_after_eq(jiffies, deadline)) {
-			sdiohal_err("SDIO drain timed out, xmit_cnt:%d; reboot required\n",
-				    count);
-			return -ETIMEDOUT;
-		}
-		usleep_range(1000, 2000);
-	}
-	return 0;
-}
-
-static atomic_t sdiohal_quarantined = ATOMIC_INIT(0);
 
 int sdiohal_runtime_put(void)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
-	int ret;
+	int xmit_cnt;
 
 	sdiohal_info("%s entry\n", __func__);
 
 	if (!p_data)
 		return -ENODEV;
 
-#ifdef CONFIG_MESON_UWE5621
-    WRITE_ONCE(p_data->rx_poll_active, false);
-#endif
 	if (!WCN_CARD_EXIST(&p_data->xmit_cnt)) {
 		sdiohal_err("%s line %d not have card\n", __func__, __LINE__);
 		return -ENODEV;
@@ -1988,18 +1943,18 @@ int sdiohal_runtime_put(void)
 		disable_irq(p_data->irq_num);
 
 #ifndef CONFIG_AML_BOARD
-	/* Stop new operations before draining existing references. */
+	/* As for amlogic platform, NOT remove card
+	 * after chip power off. So won't probe again.
+	 */
 	atomic_set(&p_data->xmit_start, 0);
 #endif
-	ret = sdiohal_wait_idle(p_data);
-	if (ret) {
-		p_data->card_dump_flag = true;
-		/* Keep transport memory/code resident while an owner may still run.
-		 * Releasing the module or zeroing xmit_cnt here could cause a UAF.
-		 */
-		if (!atomic_xchg(&sdiohal_quarantined, 1))
-			__module_get(THIS_MODULE);
-		return ret;
+	xmit_cnt = atomic_read(&p_data->xmit_cnt);
+	while ((xmit_cnt > 0) &&
+		(xmit_cnt < SDIOHAL_REMOVE_CARD_VAL)) {
+		usleep_range(1000, 2000);
+		xmit_cnt = atomic_read(&p_data->xmit_cnt);
+		sdiohal_info("%s wait xmit_cnt:%d\n",
+			     __func__, xmit_cnt);
 	}
 
 	sdiohal_info("%s wait xmit_cnt end\n", __func__);
@@ -2104,10 +2059,6 @@ static int sdiohal_probe(struct sdio_func *func,
 	int ret;
 	struct mmc_host *host = func->card->host;
 
-#ifdef CONFIG_MESON_UWE5621
-	if (!of_device_is_compatible(func->dev.of_node, "sprd,unisoc-wifi"))
-		return -ENODEV;
-#endif
 	sdiohal_info("%s: func->class=%x, vendor=0x%04x, device=0x%04x, "
 		     "func_num=0x%04x, clock=%d\n",
 		     __func__, func->class, func->vendor, func->device,
@@ -2125,7 +2076,6 @@ static int sdiohal_probe(struct sdio_func *func,
 	sdio_set_max_reqsz(0x80000);
 #endif
 
-	sdiohal_info("mainline host caps=0x%x caps2=0x%x\n", host->caps, host->caps2);
 	ret = sdiohal_get_dev_func(func);
 	if (ret < 0) {
 		sdiohal_err("get func err\n");
@@ -2142,6 +2092,7 @@ static int sdiohal_probe(struct sdio_func *func,
 		return -1;
 	}
 	sdiohal_debug("get host ok!!!");
+	sdiohal_init_host_tuning(p_data->sdio_dev_host);
 
 	atomic_set(&p_data->xmit_start, 1);
 
@@ -2158,13 +2109,6 @@ static int sdiohal_probe(struct sdio_func *func,
 			return ret;
 		}
 		sdiohal_debug("enable func1 ok\n");
-#ifdef CONFIG_MESON_UWE5621
-        cm311_packet_limit = sdiohal_packet_limit();
-        sdiohal_info("single CMD53 packet limit=%u max_req=%u max_seg=%u max_blocks=%u block=%u multi_block=%u\n",
-                     cm311_packet_limit, host->max_req_size, host->max_seg_size,
-                     host->max_blk_count, func->cur_blksize,
-                     func->card->cccr.multi_block);
-#endif
 
 		sdiohal_enable_slave_irq();
 	} else
@@ -2216,10 +2160,6 @@ static int sdiohal_probe(struct sdio_func *func,
 static void sdiohal_remove(struct sdio_func *func)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
-
-#ifdef CONFIG_MESON_UWE5621
-    WRITE_ONCE(p_data->rx_poll_active, false);
-#endif
 
 	sdiohal_info("[%s]enter\n", __func__);
 
@@ -2304,11 +2244,6 @@ static struct sdio_driver sdiohal_driver = {
 void sdiohal_remove_card(void)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
-#ifdef CONFIG_MESON_UWE5621
-	if (WCN_CARD_EXIST(&p_data->xmit_cnt))
-		sdio_unregister_driver(&sdiohal_driver);
-	return;
-#endif
 #ifdef CONFIG_AW_BOARD
 //	int wlan_bus_index = sunxi_wlan_get_bus_index();
 	/* don't need to remove sdio card. */
@@ -2359,6 +2294,52 @@ void sdiohal_remove_card(void)
 	sdiohal_unlock_scan_ws();
 }
 
+/*
+ * Power-cycle the chip through the MMC core and enable function 1 again.
+ * On boards with an mmc-pwrseq this pulses the chip's reset line, the same
+ * as unbinding and rebinding the SDIO host. Only used during start-up,
+ * before the SDIO interrupt is claimed and before firmware is loaded.
+ */
+int sdiohal_hw_reset_card(void)
+{
+	struct sdiohal_data_t *p_data = sdiohal_get_data();
+	struct sdio_func *func;
+	int ret;
+
+	if (!p_data || !WCN_CARD_EXIST(&p_data->xmit_cnt) ||
+	    !p_data->sdio_func[FUNC_1])
+		return -ENODEV;
+	func = p_data->sdio_func[FUNC_1];
+
+	sdiohal_info("%s: power-cycling the chip\n", __func__);
+	sdio_claim_host(func);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+	ret = mmc_hw_reset(func->card);
+#else
+	ret = mmc_hw_reset(func->card->host);
+#endif
+	/* > 0: the core chose to remove and re-detect the card instead */
+	if (ret > 0)
+		ret = -EBUSY;
+	if (!ret) {
+		ret = sdio_enable_func(func);
+		if (!ret)
+			ret = sdio_set_block_size(func, SDIOHAL_BLK_SIZE);
+		func->max_blksize = SDIOHAL_BLK_SIZE;
+	}
+	sdio_release_host(func);
+
+	if (ret) {
+		sdiohal_err("%s failed: %d\n", __func__, ret);
+		return ret;
+	}
+
+	sdiohal_set_cp_pin_status();
+	sdiohal_enable_slave_irq();
+
+	return 0;
+}
+
 int sdiohal_scan_card(void)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
@@ -2387,11 +2368,6 @@ int sdiohal_scan_card(void)
 	if (WCN_CARD_EXIST(&p_data->xmit_cnt)) {
 		sdiohal_info("Already exist card!, xmit_cnt=0x%x\n",
 			     atomic_read(&p_data->xmit_cnt));
-#ifdef CONFIG_MESON_UWE5621
-		if (scan_card_notify)
-			scan_card_notify();
-		return 0;
-#endif
 #ifdef CONFIG_AML_BOARD
 		/* As for amlogic platform, Not remove sdio card.
 		 * But will reset sdio host, sdio slave need to be reset.
@@ -2542,11 +2518,13 @@ void sdiohal_exit(void)
 #ifdef CONFIG_DEBUG_FS
 	sdiohal_debug_deinit();
 #endif
+	/* always unregister so reload without cold-cycle can work */
+	sdio_unregister_driver(&sdiohal_driver);
 	if (WCN_CARD_EXIST(&p_data->xmit_cnt)) {
 		sdiohal_info("Already exist card!\n");
 		sdiohal_remove_card();
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 	/* GPIO managed automatically with devm_gpiod_get */
 #else
 	if ((p_data->irq_type == SDIOHAL_RX_EXTERNAL_IRQ) &&

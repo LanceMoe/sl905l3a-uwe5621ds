@@ -172,16 +172,6 @@ void sdiohal_rx_down(void)
 	/* wait_for_completion may cause hung_task_timeout_secs
 	 * with message of task blocked for more than 120 seconds.
 	 */
-#ifdef CONFIG_MESON_UWE5621
-    if (READ_ONCE(p_data->rx_poll_active)) {
-        long ret = wait_for_completion_interruptible_timeout(
-            &p_data->rx_completed, msecs_to_jiffies(SDIOHAL_RX_POLL_MS));
-
-        if (ret == 0)
-            sdiohal_rx_poll_timeout();
-        return;
-    }
-#endif
 	wait_for_completion_interruptible(&p_data->rx_completed);
 }
 
@@ -199,7 +189,6 @@ static void sdiohal_completion_init(void)
 	init_completion(&p_data->tx_completed);
 	init_completion(&p_data->rx_completed);
 	init_completion(&p_data->scan_done);
-	/* Meson unregisters directly, without the legacy remove-card wait. */
 	init_completion(&p_data->remove_done);
 }
 
@@ -554,11 +543,11 @@ static int sdiohal_tx_fill_puh(int channel, struct mbuf_t *head,
 			return -EFAULT;
 		}
 		puh = (struct sdio_puh_t *)mbuf_node->buf;
-		*puh = (struct sdio_puh_t) {
-			.type = type,
-			.subtype = subtype,
-			.len = mbuf_node->len,
-		};
+		puh->type = type;
+		puh->subtype = subtype;
+		puh->len = mbuf_node->len;
+		puh->eof = 0;
+		puh->pad = 0;
 	}
 
 	return 0;
@@ -1421,13 +1410,12 @@ static int sdiohal_dtbs_buf_init(void)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
 
-	p_data->dtbs_buf = sdiohal_alloc_frag(MAX_MBUF_SIZE,
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-					      GFP_ATOMIC,
-#else
-					      GFP_ATOMIC | __GFP_COLD,
-#endif
-					      0, NULL);
+	/*
+	 * Not taken from the shared rx fragment page: a fragment cannot be
+	 * freed on its own, and freeing it as a page block releases pages
+	 * that belong to other users.
+	 */
+	p_data->dtbs_buf = kzalloc(MAX_MBUF_SIZE, GFP_KERNEL);
 	if (!p_data->dtbs_buf)
 		return -ENOMEM;
 
@@ -1439,17 +1427,11 @@ static int sdiohal_dtbs_buf_init(void)
 static int sdiohal_dtbs_buf_deinit(void)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
-	int order;
 
 	if (!p_data->dtbs_buf)
 		return -ENOMEM;
 
-#if (BITS_PER_LONG > 32) || (PAGE_SIZE >= 65536)
-	order = SDIOHAL_FRAG_PAGE_MAX_ORDER;
-#else
-	order = SDIOHAL_FRAG_PAGE_MAX_ORDER_32_BIT;
-#endif
-	free_pages((unsigned long)p_data->dtbs_buf, order);
+	kfree(p_data->dtbs_buf);
 	p_data->dtbs_buf = NULL;
 
 	return 0;

@@ -23,7 +23,7 @@
 #include <linux/pm_wakeup.h>
 
 #define SPRDWL_VALID_CONFIG		(0x80)
-#define  CMD_WAIT_TIMEOUT		(3000)
+#define  CMD_WAIT_TIMEOUT		(8000)
 #define CMD_DISCONNECT_TIMEOUT		(5500)
 /* Set scan timeout to 9s due to split scan
  * to several period in CP2
@@ -952,7 +952,7 @@ int sprdwl_api_available_check(struct sprdwl_priv *priv,
 		struct sprdwl_msg_buf *msg);
 int need_compat_operation(struct sprdwl_priv *priv, u8 cmd_id);
 /*driver & fw API sync function end*/
-int sprdwl_download_ini(struct sprdwl_priv *priv);
+void sprdwl_download_ini(struct sprdwl_priv *priv);
 int sprdwl_get_fw_info(struct sprdwl_priv *priv);
 int sprdwl_set_regdom(struct sprdwl_priv *priv, u8 *regdom, u32 len);
 int sprdwl_set_rts(struct sprdwl_priv *priv, u16 rts_threshold);

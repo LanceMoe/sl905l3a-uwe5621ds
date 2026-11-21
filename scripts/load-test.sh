@@ -38,12 +38,13 @@ device_found=false
 for device in /sys/bus/sdio/devices/*; do
     [[ -f "$device/uevent" ]] || continue
     if grep -q '^OF_COMPATIBLE_0=sprd,unisoc-wifi$' "$device/uevent" &&
-       grep -q '^SDIO_ID=0000:0000$' "$device/uevent"; then
+       grep -q '^SDIO_ID=0000:0000$' "$device/uevent" &&
+       [[ $(readlink -f -- "$device") == */ffe05000.mmc/* ]]; then
         [[ ! -L "$device/driver" ]] || { echo 'SDIO device is already bound.' >&2; exit 1; }
         device_found=true
     fi
 done
-[[ $device_found == true ]] || { echo 'Expected CM311 SDIO device not found.' >&2; exit 1; }
+[[ $device_found == true ]] || { echo 'Expected CM311 SDIO device on ffe05000.mmc not found.' >&2; exit 1; }
 for module in uwe5621_bsp_sdio sprdwl_ng; do
     [[ -f "$modules/$module.ko" ]] || { echo "Missing $modules/$module.ko" >&2; exit 1; }
     vermagic=$(modinfo -F vermagic "$modules/$module.ko")
@@ -83,7 +84,7 @@ fi
 stage '[1/4] Loading cfg80211'
 modprobe cfg80211
 stage '[2/4] Loading uwe5621_bsp_sdio'
-insmod "$modules/uwe5621_bsp_sdio.ko"
+insmod "$modules/uwe5621_bsp_sdio.ko" sdio_host=ffe05000.mmc
 if [[ $trace == 1 ]]; then
     stage '[trace] Enabling existing SDIO packet and dispatch logs'
     debugfs=/sys/kernel/debug
@@ -101,7 +102,7 @@ if [[ $trace == 1 ]]; then
     printf 'log_level=11\n' > "$control"
 fi
 stage '[3/4] Loading sprdwl_ng'
-insmod "$modules/sprdwl_ng.ko" "log_level=$wifi_level"
+insmod "$modules/sprdwl_ng.ko" "debug_level=$wifi_level"
 # A successful insmod does not imply that the platform driver's probe succeeded.
 [[ -L /sys/bus/platform/drivers/unisoc_wifi/unisoc_wifi ]] || {
     echo "Wi-Fi platform probe failed. Read $log; reboot before retrying." >&2

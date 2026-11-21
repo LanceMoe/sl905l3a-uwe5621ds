@@ -19,9 +19,13 @@ class BootLoaderTests(unittest.TestCase):
             loader = root / 'load.sh'
             loader.write_text((PROJECT / 'packaging/cm311-wifi-load').read_text().replace('/sys/', str(sysfs) + '/'))
             if mode != 'no-card':
-                card = sysfs / 'bus/sdio/devices/mmc0:8800:1'
+                host = 'ffe03000.mmc' if mode == 'wrong-host' else 'ffe05000.mmc'
+                card = sysfs / 'devices' / host / 'mmc0:8800:1'
                 card.mkdir(parents=True)
                 (card / 'uevent').write_text('OF_COMPATIBLE_0=sprd,unisoc-wifi\nSDIO_ID=0000:0000\n')
+                devices = sysfs / 'bus/sdio/devices'
+                devices.mkdir(parents=True)
+                (devices / card.name).symlink_to(card, target_is_directory=True)
             if mode in ('already-bound', 'failed-wifi'):
                 (sysfs / 'module/sprdwl_ng').mkdir(parents=True)
             if mode == 'transport-only':
@@ -62,7 +66,7 @@ fi
     def test_existing_or_failed_probe_is_not_repeated(self):
         result, calls = self.run_loader('already-bound')
         self.assertEqual((result.returncode, calls), (0, []))
-        for mode in ('failed-wifi', 'transport-only', 'no-card', 'wrong-kernel'):
+        for mode in ('failed-wifi', 'transport-only', 'no-card', 'wrong-host', 'wrong-kernel'):
             with self.subTest(mode=mode):
                 result, calls = self.run_loader(mode)
                 self.assertNotEqual(result.returncode, 0)

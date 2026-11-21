@@ -21,7 +21,8 @@ for ((attempt = 0; attempt < 25; attempt++)); do
     for device in /sys/bus/sdio/devices/*; do
         if [[ -r $device/uevent ]] &&
            grep -q '^OF_COMPATIBLE_0=sprd,unisoc-wifi$' "$device/uevent" &&
-           grep -q '^SDIO_ID=0000:0000$' "$device/uevent"; then
+           grep -q '^SDIO_ID=0000:0000$' "$device/uevent" &&
+           [[ $(readlink -f -- "$device") == */ffe05000.mmc/* ]]; then
             card_ready=true
             break
         fi
@@ -32,7 +33,7 @@ for ((attempt = 0; attempt < 25; attempt++)); do
     sleep 0.2
 done
 if [[ $card_ready != true ]]; then
-    echo 'Expected CM311 SDIO device did not appear within five seconds; inspect the DTB and kernel log.' >&2
+    echo 'Expected CM311 SDIO device on ffe05000.mmc did not appear within five seconds; inspect the DTB and kernel log.' >&2
     exit 1
 fi
 modprobe cfg80211

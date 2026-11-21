@@ -19,7 +19,7 @@ def files(root, kind, release):
     paths = [root / name for name in ('README.md', 'DIAGNOSTICS.md', 'INSTALL.md', 'CHANGELOG.md',
                                       'LICENSE', 'THIRD_PARTY.md', 'VERSION', 'PORT_VERSION',
                                       '.gitattributes', '.gitignore')]
-    for directory in ('scripts', 'tests', 'driver', 'experimental', 'docs', 'packaging', 'ci', '.github'):
+    for directory in ('scripts', 'tests', 'driver', 'docs', 'packaging', 'ci', '.github'):
         paths.extend(path for path in (root / directory).rglob('*') if path.is_file()
                      and '__pycache__' not in path.parts and path.suffix != '.pyc')
     if kind != 'integration':
@@ -68,7 +68,7 @@ def package(root, kind, release=None):
     payload = {path.relative_to(root).as_posix(): path.read_bytes() for path in files(root, kind, release)}
     manifest = {'format': 1, 'version': version, 'port_version': (root / 'PORT_VERSION').read_text().strip(),
                 'kind': kind, 'kernel_release': release if kind == 'modules' else None,
-                'upstream_commit': 'fa9d1a6703a93a85bcf68e865ebc2726474076ad',
+                'upstream_commit': 'd2d6bc45c5ef9cefdd53e6c51cec3ba948b84972',
                 'files': {name: {'size': len(data), 'sha256': digest(data)} for name, data in payload.items()}}
     payload['PACKAGE_MANIFEST.json'] = (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode()
     suffix = release if kind == 'modules' else kind

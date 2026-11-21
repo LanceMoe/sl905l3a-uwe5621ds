@@ -447,7 +447,9 @@ static void reorder_msdu_process(struct sprdwl_rx_ba_entry *ba_entry,
 			#endif
 			ba_node->timeout_cnt = 0;
 		}
-	} else if (skb) {
+	} else {
+		wl_err("%s: BA SESSION IS NO ACTIVE sta_lut_index: %d, tid: %d\n",
+		       __func__, msdu_desc->sta_lut_index, msdu_desc->tid);
 		reorder_set_skb_list(ba_entry, skb, skb);
 	}
 
@@ -716,7 +718,7 @@ static void send_addba_rsp(struct sprdwl_rx_ba_entry *ba_entry,
 			   unsigned char tid, unsigned char sta_lut_index,
 			   int status)
 {
-	struct sprdwl_ba_event_data ba_data = {};
+	struct sprdwl_ba_event_data ba_data;
 	struct sprdwl_intf *intf = NULL;
 	struct sprdwl_peer_entry *peer_entry = NULL;
 	struct sprdwl_rx_if *rx_if = container_of(ba_entry,
@@ -745,13 +747,7 @@ static void send_addba_rsp(struct sprdwl_rx_ba_entry *ba_entry,
 static void send_delba(struct sprdwl_rx_ba_entry *ba_entry,
 		       unsigned short tid, unsigned char sta_lut_index)
 {
-	struct sprdwl_ba_event_data ba_data = {
-		.addba_rsp = {
-			.type = SPRDWL_DELBA_CMD,
-			.tid = tid,
-			.success = 1,
-		},
-	};
+	struct sprdwl_cmd_ba delba;
 	struct sprdwl_intf *intf = NULL;
 	struct sprdwl_peer_entry *peer_entry = NULL;
 	struct sprdwl_rx_if *rx_if = container_of(ba_entry,
@@ -766,9 +762,12 @@ static void send_delba(struct sprdwl_rx_ba_entry *ba_entry,
 		return;
 	}
 
-	ether_addr_copy(ba_data.addba_rsp.da, peer_entry->tx.da);
+	delba.type = SPRDWL_DELBA_CMD;
+	delba.tid = tid;
+	ether_addr_copy(delba.da, peer_entry->tx.da);
+	delba.success = 1;
 
-	sprdwl_rx_send_cmd(intf, &ba_data, sizeof(ba_data),
+	sprdwl_rx_send_cmd(intf, (void *)(&delba), sizeof(delba),
 			   SPRDWL_WORK_BA_MGMT, peer_entry->ctx_id);
 }
 
@@ -827,20 +826,13 @@ void wlan_ba_session_event(void *hw_intf,
 	struct sprdwl_rx_ba_entry *ba_entry = &rx_if->ba_entry;
 	struct sprdwl_event_ba *ba_event =
 				  (struct sprdwl_event_ba *)data;
-	unsigned char type;
+	unsigned char type = ba_event->type;
 	int ret = 0;
 	struct sprdwl_peer_entry *peer_entry = NULL;
 	u8 qos_index;
 
-	if (len < offsetof(struct sprdwl_event_ba, win_param) ||
-	    ba_event->tid >= NUM_TIDS || ba_event->sta_lut_index >= MAX_LUT_NUM)
-		return;
-
-	type = ba_event->type;
 	switch (type) {
 	case SPRDWL_ADDBA_REQ_EVENT:
-		if (len < sizeof(*ba_event))
-			return;
 		ret = wlan_addba_event(ba_entry, ba_event);
 		send_addba_rsp(ba_entry, ba_event->tid,
 			       ba_event->sta_lut_index, ret);
@@ -849,12 +841,16 @@ void wlan_ba_session_event(void *hw_intf,
 		wlan_delba_event(ba_entry, ba_event);
 		break;
 	case SPRDWL_BAR_EVENT:
+		/*
+		 * Ignored: the handler was disabled in the vendor code, for
+		 * reasons unknown. Frames the sender has given up on are
+		 * then only skipped when the reorder timer fires
+		 * (RX_BA_LOSS_RECOVERY_TIMEOUT, 100 ms).
+		 */
 		/*wlan_bar_event(ba_entry, ba_event);*/
 		break;
 	case SPRDWL_FILTER_EVENT:
-		if (len >= offsetof(struct sprdwl_event_ba, msdu_param) +
-			   sizeof(ba_event->msdu_param))
-			wlan_filter_event(ba_entry, ba_event);
+		wlan_filter_event(ba_entry, ba_event);
 		break;
 	case SPRDWL_DELTXBA_EVENT:
 		peer_entry = &intf->peer_entry[ba_event->sta_lut_index];

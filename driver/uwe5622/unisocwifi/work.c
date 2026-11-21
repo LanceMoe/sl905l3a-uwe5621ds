@@ -96,18 +96,17 @@ static void sprdwl_do_work(struct work_struct *work)
 			sprdwl_notify_ip(priv, vif->ctx_id, SPRDWL_IPV6,
 					 sprdwl_work->data);
 			break;
+		case SPRDWL_WORK_NOTIFY_IPV4:
+			sprdwl_notify_ip(priv, vif->ctx_id, SPRDWL_IPV4,
+					 sprdwl_work->data);
+			break;
 		case SPRDWL_WORK_BA_MGMT:
-			if (sprdwl_work->len != sizeof(*ba_data))
-				break;
 			ba_data = (struct sprdwl_ba_event_data *)sprdwl_work->data;
-			if (!sprdwl_send_ba_mgmt(priv, vif->ctx_id,
-						 &ba_data->addba_rsp,
-						 sizeof(ba_data->addba_rsp)) &&
-			    ba_data->addba_rsp.type == SPRDWL_ADDBA_RSP_CMD &&
-			    ba_data->addba_rsp.success)
-				sprdwl_active_ba_node(ba_data->ba_entry,
-						      ba_data->sta_lut_index,
-						      ba_data->addba_rsp.tid);
+			sprdwl_send_ba_mgmt(priv, vif->ctx_id,
+					    &ba_data->addba_rsp,
+					    sizeof(ba_data->addba_rsp));
+			sprdwl_active_ba_node(ba_data->ba_entry, ba_data->sta_lut_index,
+					      ba_data->addba_rsp.tid);
 			break;
 		case SPRDWL_WORK_ADDBA:
 			sprdwl_tx_send_addba(vif, sprdwl_work->data,

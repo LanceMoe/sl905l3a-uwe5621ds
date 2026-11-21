@@ -15,6 +15,7 @@
  * GNU General Public License for more details.
  */
 
+#include <net/net_namespace.h>
 #include "sprdwl.h"
 #include "npi.h"
 #include "cfg80211.h"
@@ -28,9 +29,6 @@
 #include "rx_msg.h"
 #include "wl_core.h"
 #include "tcp_ack.h"
-#ifdef CONFIG_MESON_UWE5621
-#include <wcn_bus.h>
-#endif
 #ifdef DFS_MASTER
 #include "11h.h"
 #endif
@@ -804,7 +802,7 @@ out:
 #define SPRDWLSETCOUNTRY	(SIOCDEVPRIVATE + 5)
 #define SPRDWLSETTLV		(SIOCDEVPRIVATE + 7)
 
-static int sprdwl_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
+static int __maybe_unused sprdwl_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
 {
 	struct sprdwl_vif *vif = netdev_priv(ndev);
 	struct iwreq *wrq = (struct iwreq *)req;
@@ -837,22 +835,49 @@ static int sprdwl_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
 	return 0;
 }
 
+/* The firmware filter only takes IPv4 (01:00:5e:00-7f) and IPv6 (33:33)
+ * multicast addresses. Others, e.g. the 01:80:c2 addresses systemd-networkd
+ * joins for LLDP, must be skipped instead of aborting the whole update.
+ */
+static bool sprdwl_is_ip_mc_addr(const u8 *addr)
+{
+	return (addr[0] == 0x33 && addr[1] == 0x33) ||
+	       (addr[0] == 0x01 && addr[1] == 0x00 &&
+		addr[2] == 0x5e && addr[3] <= 0x7f);
+}
+
+static unsigned int sprdwl_ip_mc_count(struct net_device *ndev)
+{
+	struct netdev_hw_addr *ha;
+	unsigned int count = 0;
+
+	netdev_for_each_mc_addr(ha, ndev)
+		if (sprdwl_is_ip_mc_addr(ha->addr))
+			count++;
+
+	return count;
+}
+
 static bool mc_address_changed(struct net_device *ndev)
 {
 	struct sprdwl_vif *vif = netdev_priv(ndev);
 	struct netdev_hw_addr *ha;
-	u8 mc_count, index;
+	unsigned int mc_count;
+	u8 index;
 	u8 *mac_addr;
 	bool found;
 
-	mc_count = netdev_mc_count(ndev);
+	mc_count = sprdwl_ip_mc_count(ndev);
 
 	if (mc_count != vif->mc_filter->mac_num)
 		return true;
 
-	mac_addr = vif->mc_filter->mac_addr;
 	netdev_for_each_mc_addr(ha, ndev) {
+		if (!sprdwl_is_ip_mc_addr(ha->addr))
+			continue;
+
 		found = false;
+		mac_addr = vif->mc_filter->mac_addr;
 		for (index = 0; index < vif->mc_filter->mac_num; index++) {
 			if (!memcmp(ha->addr, mac_addr, ETH_ALEN)) {
 				found = true;
@@ -874,11 +899,11 @@ static void sprdwl_set_multicast(struct net_device *ndev)
 	struct sprdwl_priv *priv = vif->priv;
 	struct sprdwl_work *work;
 	struct netdev_hw_addr *ha;
-	u8 mc_count;
+	unsigned int mc_count;
 	u8 *mac_addr;
 
-	mc_count = netdev_mc_count(ndev);
-	wl_ndev_log(L_DBG, ndev, "%s multicast address num: %d\n", __func__, mc_count);
+	mc_count = sprdwl_ip_mc_count(ndev);
+	wl_ndev_log(L_DBG, ndev, "%s multicast address num: %u\n", __func__, mc_count);
 	if (mc_count > priv->max_mc_mac_addrs)
 		return;
 
@@ -886,15 +911,13 @@ static void sprdwl_set_multicast(struct net_device *ndev)
 	if ((ndev->flags & IFF_MULTICAST) && (mc_address_changed(ndev))) {
 		mac_addr = vif->mc_filter->mac_addr;
 		netdev_for_each_mc_addr(ha, ndev) {
+			if (!sprdwl_is_ip_mc_addr(ha->addr)) {
+				wl_ndev_log(L_DBG, ndev, "%s skip non-IP addr: %pM\n",
+					    __func__, ha->addr);
+				continue;
+			}
 			wl_ndev_log(L_DBG, ndev, "%s set mac: %pM\n", __func__,
 				    ha->addr);
-			if ((ha->addr[0] != 0x33 || ha->addr[1] != 0x33) &&
-			    (ha->addr[0] != 0x01 || ha->addr[1] != 0x00 ||
-			     ha->addr[2] != 0x5e || ha->addr[3] > 0x7f)) {
-				wl_ndev_log(L_INFO, ndev, "%s invalid addr\n",
-					    __func__);
-				return;
-			}
 			ether_addr_copy(mac_addr, ha->addr);
 			mac_addr += ETH_ALEN;
 		}
@@ -956,32 +979,6 @@ static int sprdwl_set_mac(struct net_device *dev, void *addr)
 	return 0;
 }
 
-static void sprdwl_meson_limit_mtu(struct net_device *ndev)
-{
-#ifdef CONFIG_MESON_UWE5621
-    unsigned int mtu = sdiohal_packet_limit() >= 2048 ? ETH_DATA_LEN : 1400;
-
-    ndev->mtu = mtu;
-    ndev->max_mtu = mtu;
-#endif
-}
-
-#ifdef CONFIG_MESON_UWE5621
-/* Modern device ioctl dispatch no longer calls ndo_do_ioctl. */
-static int sprdwl_meson_siocdevprivate(struct net_device *ndev,
-                                     struct ifreq *ifr,
-                                     void __user *data, int cmd)
-{
-#ifdef CONFIG_COMPAT
-    /* The legacy suspend handler expects a native pointer-sized command. */
-    if (in_compat_syscall())
-        return -EOPNOTSUPP;
-#endif
-    ifr->ifr_data = data;
-    return sprdwl_ioctl(ndev, ifr, cmd);
-}
-#endif
-
 static struct net_device_ops sprdwl_netdev_ops = {
 	.ndo_init = sprdwl_init,
 	.ndo_uninit = sprdwl_uninit,
@@ -990,9 +987,8 @@ static struct net_device_ops sprdwl_netdev_ops = {
 	.ndo_start_xmit = sprdwl_start_xmit,
 	.ndo_get_stats = sprdwl_get_stats,
 	.ndo_tx_timeout = sprdwl_tx_timeout,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 4, 0)
 	.ndo_do_ioctl = sprdwl_ioctl,
-#ifdef CONFIG_MESON_UWE5621
-    .ndo_siocdevprivate = sprdwl_meson_siocdevprivate,
 #endif
 	.ndo_set_mac_address = sprdwl_set_mac,
 };
@@ -1095,6 +1091,38 @@ static struct notifier_block sprdwl_inet6addr_cb = {
 #if IS_ENABLED(CONFIG_SUNXI_ADDR_MGT)
 extern int get_custom_mac_address(int fmt, char *name, char *addr);
 #endif
+static char *wlan_mac;
+module_param(wlan_mac, charp, 0444);
+MODULE_PARM_DESC(wlan_mac, "Override wlan MAC aa:bb:cc:dd:ee:ff");
+/* stable fallback MAC: module param, else eth0 MAC with LA bit, last byte ^0x5a */
+static bool sprdwl_derive_mac(u8 *addr)
+{
+	struct net_device *eth;
+	unsigned int m[6];
+	int i;
+
+	if (wlan_mac && sscanf(wlan_mac, "%x:%x:%x:%x:%x:%x",
+			       &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+		for (i = 0; i < 6; i++)
+			addr[i] = m[i];
+		if (is_valid_ether_addr(addr)) {
+			pr_info("wlan_mac: using module param %pM\n", addr);
+			return true;
+		}
+	}
+	eth = dev_get_by_name(&init_net, "eth0");
+	if (eth) {
+		ether_addr_copy(addr, eth->dev_addr);
+		dev_put(eth);
+		addr[0] = (addr[0] | 0x02) & 0xfe;
+		addr[5] ^= 0x5a;
+		if (is_valid_ether_addr(addr)) {
+			pr_info("wlan_mac: derived from eth0 %pM\n", addr);
+			return true;
+		}
+	}
+	return false;
+}
 static void sprdwl_set_mac_addr(struct sprdwl_vif *vif, u8 *pending_addr,
 				u8 *addr)
 {
@@ -1123,6 +1151,9 @@ static void sprdwl_set_mac_addr(struct sprdwl_vif *vif, u8 *pending_addr,
 	} else if (priv && is_valid_ether_addr(priv->default_mac)) {
 		ether_addr_copy(addr, priv->default_mac);
 		default_mac_valid = 1;
+	} else if (sprdwl_derive_mac(addr)) {
+		if (priv)
+			ether_addr_copy(priv->mac_addr, addr);
 	} else {
 		printk("no valid mac address!\n");
 	}
@@ -1333,21 +1364,21 @@ static void sprdwl_deinit_vif(struct sprdwl_vif *vif)
 {
 	sprdwl_scan_done(vif, true);
 	sprdwl_sched_scan_done(vif, true);
+	/*
+	 * Report the connection as gone before the interface is removed.
+	 * The firmware's disconnect event will not arrive any more, and
+	 * cfg80211 warns about a station interface that still has a BSS
+	 * (_cfg80211_unregister_wdev).
+	 */
+	if (vif->ndev &&
+	    (vif->sm_state == SPRDWL_CONNECTING ||
+	     vif->sm_state == SPRDWL_CONNECTED ||
+	     vif->sm_state == SPRDWL_DISCONNECTING))
+		sprdwl_report_disconnection(vif, WLAN_REASON_DEAUTH_LEAVING);
+
 	/* We have to clear all the work which
 	 * is belong to the vif we are going to remove.
 	 */
-#ifdef SYNC_DISCONNECT
-	if (vif->sm_state == SPRDWL_CONNECTING ||
-	    vif->sm_state == SPRDWL_CONNECTED  ||
-	    vif->sm_state == SPRDWL_DISCONNECTING)
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
-		cfg80211_disconnected(vif->ndev, 3,
-		NULL, 0, false, GFP_KERNEL);
-#else
-		cfg80211_disconnected(vif->ndev, 3,
-		NULL, 0, GFP_KERNEL);
-#endif
-#endif
 	sprdwl_cancle_work(vif->priv, vif);
 
 	if (vif->ref > 0) {
@@ -1462,20 +1493,15 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
 	ndev->destructor = free_netdev;
 #endif
 	ndev->needed_headroom = priv->skb_head_len;
-    sprdwl_meson_limit_mtu(ndev);
 	ndev->watchdog_timeo = 2 * HZ;
-#if defined(CONFIG_MESON_UWE5621)
-	/* UWE5621DS can stop returning TX credits with checksum offload. */
-	ndev->features &= ~NETIF_F_CSUM_MASK;
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)
-	ndev->features |= NETIF_F_CSUM_MASK;
-#else
-	ndev->features |= NETIF_F_ALL_CSUM;
-#endif
+	/* No TX csum/SG/TSO/GSO offload: the CP crashes on full-size TCP frames with it */
+	ndev->features &= ~(NETIF_F_CSUM_MASK | NETIF_F_SG | NETIF_F_ALL_TSO |
+			    NETIF_F_GSO_MASK);
+	ndev->hw_features &= ~(NETIF_F_CSUM_MASK | NETIF_F_SG | NETIF_F_ALL_TSO |
+			       NETIF_F_GSO_MASK);
 #ifdef RX_NAPI
 	ndev->features |= NETIF_F_GRO;
 #endif
-	ndev->features |= NETIF_F_SG;
 	SET_NETDEV_DEV(ndev, wiphy_dev(priv->wiphy));
 
 	sprdwl_set_mac_addr(vif, addr, target_mac_addr);
@@ -1487,7 +1513,7 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
 #endif
 
 	/* register new Ethernet interface */
-	ret = cfg80211_register_netdevice(ndev);
+	ret = register_netdevice(ndev);
 	if (ret) {
 		wl_ndev_log(L_ERR, ndev, "failed to regitster netdev(%d)!\n", ret);
 		goto err;
@@ -1509,7 +1535,7 @@ static void sprdwl_unregister_netdev(struct sprdwl_vif *vif)
 	if (vif->priv->fw_capa & SPRDWL_CAPA_MC_FILTER)
 		kfree(vif->mc_filter);
 	sprdwl_deinit_vif(vif);
-	cfg80211_unregister_netdevice(vif->ndev);
+	unregister_netdevice(vif->ndev);
 }
 
 struct wireless_dev *sprdwl_add_iface(struct sprdwl_priv *priv,
@@ -1569,12 +1595,7 @@ next_intf:
 		list_del(&vif->vif_node);
 		spin_unlock_bh(&priv->list_lock);
 		rtnl_lock();
-		/* NETDEV_GOING_DOWN takes the wiphy mutex itself. */
-		if (vif->ndev)
-			dev_close(vif->ndev);
-		wiphy_lock(priv->wiphy);
 		sprdwl_del_iface(priv, vif);
-		wiphy_unlock(priv->wiphy);
 		rtnl_unlock();
 		goto next_intf;
 	}
@@ -1596,95 +1617,82 @@ static void sprdwl_init_debugfs(struct sprdwl_priv *priv)
 
 int sprdwl_core_init(struct device *dev, struct sprdwl_priv *priv)
 {
-    struct wiphy *wiphy = priv->wiphy;
-    struct wireless_dev *wdev;
-    int ret;
-
-    ret = sprdwl_sync_version(priv);
-    if (ret) {
-        pr_err("sprdwl: firmware API synchronization failed: %d\n", ret);
-        return ret;
-    }
-    ret = sprdwl_download_ini(priv);
-    if (ret)
-        return ret;
-    ret = sprdwl_get_fw_info(priv);
-    if (ret) {
-        pr_err("sprdwl: firmware information query failed: %d\n", ret);
-        return ret;
-    }
-    sprdwl_tcp_ack_init(priv);
+	u8 *efuse_mac_addr = NULL;
+	struct wiphy *wiphy = priv->wiphy;
+	struct wireless_dev *wdev;
+	int ret;
+	ret = sprdwl_sync_version(priv);
+	if (ret) {
+		wl_err("SYNC CMD ERROR!!\n");
+		goto out;
+	}
+	sprdwl_download_ini(priv);
+	sprdwl_tcp_ack_init(priv);
+	sprdwl_get_fw_info(priv);
 #ifdef RTT_SUPPORT
-    sprdwl_ftm_init(priv);
-#endif
-    sprdwl_setup_wiphy(wiphy, priv);
-    sprdwl_vendor_init(wiphy);
-    set_wiphy_dev(wiphy, dev);
-    ret = wiphy_register(wiphy);
-    if (ret)
-        goto err_vendor;
-    sprdwl_init_debugfs(priv);
+	sprdwl_ftm_init(priv);
+#endif /* RTT_SUPPORT */
+	sprdwl_setup_wiphy(wiphy, priv);
+	sprdwl_vendor_init(wiphy);
+	set_wiphy_dev(wiphy, dev);
+	ret = wiphy_register(wiphy);
+	if (ret) {
+		wl_err("failed to regitster wiphy(%d)!\n", ret);
+		goto out;
+	}
+	sprdwl_init_debugfs(priv);
 
-    rtnl_lock();
-    wiphy_lock(wiphy);
-    wdev = sprdwl_add_iface(priv, "wlan%d", NL80211_IFTYPE_STATION, NULL);
-    wiphy_unlock(wiphy);
-    rtnl_unlock();
-    if (IS_ERR(wdev)) {
-        ret = PTR_ERR(wdev);
-        goto err_wiphy;
-    }
+	if (is_valid_ether_addr(priv->mac_addr))
+		efuse_mac_addr = priv->mac_addr;
+	rtnl_lock();
+	wdev = sprdwl_add_iface(priv, "wlan%d", NL80211_IFTYPE_STATION, NULL);
+	rtnl_unlock();
+	if (IS_ERR(wdev)) {
+		wiphy_unregister(wiphy);
+		ret = -ENXIO;
+		goto out;
+	}
+
 #ifdef CONFIG_P2P_INTF
-    rtnl_lock();
-    wiphy_lock(wiphy);
-    wdev = sprdwl_add_iface(priv, "p2p%d", NL80211_IFTYPE_P2P_DEVICE, NULL);
-    wiphy_unlock(wiphy);
-    rtnl_unlock();
-    if (IS_ERR(wdev)) {
-        ret = PTR_ERR(wdev);
-        goto err_ifaces;
-    }
+	rtnl_lock();
+	wdev = sprdwl_add_iface(priv, "p2p%d", NL80211_IFTYPE_P2P_DEVICE, NULL);
+	rtnl_unlock();
+	if (IS_ERR(wdev)) {
+		wiphy_unregister(wiphy);
+		ret = -ENXIO;
+		goto out;
+	}
 #endif
+
 #ifdef RX_NAPI
-    sprdwl_rx_napi_init(wdev->netdev,
-                       (struct sprdwl_intf *)priv->hw_priv);
+	sprdwl_rx_napi_init(wdev->netdev,
+			    ((struct sprdwl_intf *)priv->hw_priv));
 #endif
-    qos_enable(1);
-    sprdwl_init_npi();
-    ret = register_inetaddr_notifier(&sprdwl_inetaddr_cb);
-    if (ret)
-        goto err_npi;
-    if (priv->fw_capa & SPRDWL_CAPA_NS_OFFLOAD) {
-        ret = register_inet6addr_notifier(&sprdwl_inet6addr_cb);
-        if (ret)
-            goto err_inet;
-    }
-    trace_info_init();
-    ret = marlin_reset_register_notify(priv->if_ops->force_exit, priv->hw_priv);
-    if (!ret)
-        return 0;
 
-    trace_info_deinit();
-    if (priv->fw_capa & SPRDWL_CAPA_NS_OFFLOAD)
-        unregister_inet6addr_notifier(&sprdwl_inet6addr_cb);
-err_inet:
-    unregister_inetaddr_notifier(&sprdwl_inetaddr_cb);
-err_npi:
-    sprdwl_deinit_npi();
-    qos_enable(0);
-#ifdef CONFIG_P2P_INTF
-err_ifaces:
-#endif
-    sprdwl_del_all_ifaces(priv);
-err_wiphy:
-    wiphy_unregister(wiphy);
-err_vendor:
-    sprdwl_vendor_deinit(wiphy);
-#ifdef RTT_SUPPORT
-    sprdwl_ftm_deinit(priv);
-#endif
-    sprdwl_tcp_ack_deinit(priv);
-    return ret;
+	qos_enable(1);
+	sprdwl_init_npi();
+	ret = register_inetaddr_notifier(&sprdwl_inetaddr_cb);
+	if (ret)
+		wl_err("%s failed to register inetaddr notifier(%d)!\n",
+		       __func__, ret);
+	if (priv->fw_capa & SPRDWL_CAPA_NS_OFFLOAD) {
+		wl_info("\tIPV6 NS Offload supported\n");
+		ret = register_inet6addr_notifier(&sprdwl_inet6addr_cb);
+		if (ret)
+			wl_err("%s failed to register inet6addr notifier(%d)!\n",
+			       __func__, ret);
+	}
+
+	trace_info_init();
+
+	ret = marlin_reset_register_notify(priv->if_ops->force_exit, priv->hw_priv);
+	if (ret) {
+		wl_err("%s failed to register wcn cp rest notify(%d)!\n",
+		       __func__, ret);
+	}
+
+out:
+	return ret;
 }
 
 int sprdwl_core_deinit(struct sprdwl_priv *priv)
@@ -1708,34 +1716,13 @@ int sprdwl_core_deinit(struct sprdwl_priv *priv)
 	return 0;
 }
 
-/* Zero pauses new TX BA negotiations; it does not tear down active BA. */
-#ifdef CONFIG_MESON_UWE5621
-unsigned int tx_addba_retry_ms = 30000;
-#else
-unsigned int tx_addba_retry_ms = 3000;
-#endif
-module_param(tx_addba_retry_ms, uint, 0644);
-MODULE_PARM_DESC(tx_addba_retry_ms,
-                "TX ADDBA attempt interval in ms (0=pause new requests; capped at 300000)");
-
 unsigned int wfa_cap;
-module_param(wfa_cap, uint, 0000);
+module_param(wfa_cap, uint, 0444);
 MODULE_PARM_DESC(wfa_cap, "set capability for WFA test");
 
 unsigned int disable_powersave;
-module_param(disable_powersave, uint, 0000);
-MODULE_PARM_DESC(disable_powersave, "Disable firmware power save mode (0=default, 1=ignore EVENT_PWR_DOWN)");
+module_param(disable_powersave, uint, 0644);
+MODULE_PARM_DESC(disable_powersave, "Disable firmware power save mode (0=default, 1=ignore EVENT_PWR_DOWN); takes effect at the next power-down request");
 
-unsigned int tcp_ack_drop_cnt = SPRDWL_TCP_ACK_DROP_CNT;
-/* Maybe you need S_IRUGO | S_IWUSR for debug */
-module_param(tcp_ack_drop_cnt, uint, 0000);
-MODULE_PARM_DESC(tcp_ack_drop_cnt, "valid values: [1, 13]");
-
-#ifdef TCP_ACK_DROP_SUPPORT
-unsigned int tcp_ack_drop_enable = 1;
-module_param(tcp_ack_drop_enable, uint, 0000);
-MODULE_PARM_DESC(tcp_ack_drop_enable, "valid values: [0, 1]");
-#else
-const unsigned int tcp_ack_drop_enable;
-#endif
+/* tcp_ack_drop_cnt and tcp_ack_drop_enable are defined in tcp_ack.c */
 

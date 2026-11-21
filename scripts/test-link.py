@@ -4,7 +4,7 @@
 Tests the WLAN gateway and 1.1.1.1, then temporarily tests MTU 1400 and restores
 the original MTU. Does not reconnect, reload modules or change saved profiles.
 With --soak-seconds, retains the current MTU and observes sustained ICMP instead.
-With --addba-compare-seconds, compares three live TX ADDBA retry settings on v8.
+On legacy v8 modules, --addba-compare-seconds compares live TX ADDBA retry settings.
 """
 import argparse
 from contextlib import ExitStack
@@ -352,7 +352,9 @@ def main(root=None, argv=()):
 def run_probe(collector, output, control, summary):
     capture = None
     trace_attempted = False
-    wifi_control = Path('/sys/module/sprdwl_ng/parameters/log_level')
+    wifi_control = Path('/sys/module/sprdwl_ng/parameters/debug_level')
+    if not wifi_control.exists():
+        wifi_control = wifi_control.with_name('log_level')
     wifi_original = None
     long_test = bool(summary.get('soak_seconds') or summary.get('addba_compare_seconds'))
     try:

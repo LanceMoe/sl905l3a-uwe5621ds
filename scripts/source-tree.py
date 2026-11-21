@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 import sys
 
-REVISION = 'fa9d1a6703a93a85bcf68e865ebc2726474076ad'
+REVISION = 'd2d6bc45c5ef9cefdd53e6c51cec3ba948b84972'
 
 
 def source_stamp(root):

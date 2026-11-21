@@ -43,7 +43,7 @@
 
 /* tx len less than cp len 4 byte as sdiom 4 bytes align */
 /* set MAX CMD length to 1600 on firmware side*/
-#define SPRDWL_MAX_CMD_TXLEN	1596
+#define SPRDWL_MAX_CMD_TXLEN	2048	/* headroom for INI sec2+hdr+puh */
 #define SPRDWL_MAX_CMD_RXLEN	1092
 #define SPRDWL_MAX_DATA_TXLEN	1672
 #define SPRDWL_MAX_DATA_RXLEN	1676
@@ -77,8 +77,9 @@ struct sprdwl_peer_entry {
 	unsigned long ba_tx_done_map;
 	u8 vowifi_enabled;
 	u8 vowifi_pkt_cnt;
-	/* Monotonic attempt times for all eight 802.11 TIDs, including 7. */
-	struct timespec64 time[8];
+	struct timespec time[6 + 1];
+	/* boottime seconds when the firmware added this peer (AP mode) */
+	time64_t assoc_time;
 };
 
 #if defined(MORE_DEBUG)

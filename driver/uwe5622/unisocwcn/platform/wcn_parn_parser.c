@@ -194,7 +194,7 @@ int parse_firmware_path(char *firmware_path)
 			continue;
 		}
 		memset(fstab_name, 0, sizeof(fstab_name));
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 		strscpy(fstab_name, fstab_dir[loop], sizeof(fstab_name));
 #else
 		strncpy(fstab_name, fstab_dir[loop], sizeof(fstab_name));

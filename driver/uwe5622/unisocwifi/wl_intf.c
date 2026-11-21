@@ -681,7 +681,7 @@ out:
 		break;
 	}
 
-	wl_err("ctx_id = %d, sm_state = %d, bssid =%pM\n",
+	wl_debug("ctx_id = %d, sm_state = %d, bssid =%pM\n",
 			vif->ctx_id, vif->sm_state, intf->skb_da);
 
 	return ret;
@@ -1514,7 +1514,6 @@ void sprdwl_event_sta_lut(struct sprdwl_vif *vif, u8 *data, u16 len)
 		intf->peer_entry[i].ctx_id = sta_lut->ctx_id;
 		intf->peer_entry[i].ht_enable = sta_lut->is_ht_enable;
 		intf->peer_entry[i].vht_enable = sta_lut->is_vht_enable;
-		memset(intf->peer_entry[i].time, 0, sizeof(intf->peer_entry[i].time));
 		intf->peer_entry[i].ba_tx_done_map = 0;
 		intf->tx_num[i] = 0;
 
@@ -1524,6 +1523,9 @@ void sprdwl_event_sta_lut(struct sprdwl_vif *vif, u8 *data, u16 len)
 			sta_lut->ra[0], sta_lut->ra[1], sta_lut->ra[2],
 			sta_lut->ra[3], sta_lut->ra[4], sta_lut->ra[5]);
 		ether_addr_copy(intf->peer_entry[i].tx.da, sta_lut->ra);
+		if (sta_lut->action == ADD_LUT_INDEX)
+			intf->peer_entry[i].assoc_time =
+				ktime_get_boottime_seconds();
 		break;
 	default:
 		break;
@@ -1718,8 +1720,8 @@ err:
 		wl_err("%s: unregister %d ops\n",
 		       __func__, g_intf_ops.max_num);
 
-		while (chn > 0)
-			sprdwcn_bus_chn_deinit(&g_intf_ops.hif_ops[--chn]);
+		for (; chn > 0; chn--)
+			sprdwcn_bus_chn_deinit(&g_intf_ops.hif_ops[chn]);
 
 		g_intf_ops.hif_ops = NULL;
 		g_intf_ops.max_num = 0;

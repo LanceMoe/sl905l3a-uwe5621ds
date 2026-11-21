@@ -301,10 +301,6 @@ struct sdiohal_data_t {
 	struct task_struct *rx_thread;
 	struct completion tx_completed;
 	struct completion rx_completed;
-#ifdef CONFIG_MESON_UWE5621
-    /* Armed only after firmware startup and successful runtime_get. */
-    bool rx_poll_active;
-#endif
 	struct wakeup_source *tx_ws;
 	struct wakeup_source *rx_ws;
 	atomic_t tx_wake_flag;
@@ -349,7 +345,7 @@ struct sdiohal_data_t {
 
 	bool flag_init;
 	atomic_t flag_suspending;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 	struct gpio_desc *gpio_num;
 #else
 	int gpio_num;
@@ -394,6 +390,8 @@ struct sdiohal_data_t {
 };
 
 struct sdiohal_data_t *sdiohal_get_data(void);
+/* RX refusal recovery: crafted CMD53 read followed by a CCCR abort */
+void sdiohal_crafted_read(unsigned int claim);
 unsigned char sdiohal_get_tx_mode(void);
 unsigned char sdiohal_get_rx_mode(void);
 unsigned char sdiohal_get_irq_type(void);
@@ -470,13 +468,6 @@ int sdiohal_misc_init(void);
 void sdiohal_misc_deinit(void);
 
 /* sdiohal main.c */
-#ifdef CONFIG_MESON_UWE5621
-#define SDIOHAL_RX_POLL_MS 20
-void sdiohal_rx_poll_timeout(void);
-void sdiohal_rx_no_progress(void);
-#endif
-unsigned int sdiohal_packet_limit(void);
-unsigned int sdiohal_rx_packet_limit(void);
 void sdiohal_sdio_tx_status(void);
 unsigned int sdiohal_get_trans_pac_num(void);
 int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen);
@@ -522,6 +513,37 @@ int sdiohal_writel(unsigned int system_addr, void *buf);
 int sdiohal_readl(unsigned int system_addr, void *buf);
 void sdiohal_dump_aon_reg(void);
 
+/*
+ * Largest single CMD53 transfer.  Amlogic sd_emmc controllers flagged
+ * with "amlogic,dram-access-quirk" (sd_emmc_a on G12A) move data through
+ * a 1536-byte SRAM buffer and cannot do larger requests.  Other hosts get
+ * larger defaults at probe time unless set by module parameter.  A TX
+ * limit of 0 follows the RX limit.
+ */
+#define SDIOHAL_XFER_MAX_QUIRK		1536
+#define SDIOHAL_RX_XFER_MAX_DEFAULT	32768
+#define SDIOHAL_TX_XFER_MAX_DEFAULT	65536
+
+extern unsigned int sdiohal_rx_xfer_limit;
+extern unsigned int sdiohal_tx_xfer_limit;
+
+static inline unsigned int sdiohal_rx_xfer_max(void)
+{
+	unsigned int max = READ_ONCE(sdiohal_rx_xfer_limit);
+
+	return max ? max : SDIOHAL_XFER_MAX_QUIRK;
+}
+
+void sdiohal_rx_init_tuning(bool dram_quirk);
+bool sdiohal_rx_crafted_recovery(void);
+
+static inline unsigned int sdiohal_tx_xfer_max(void)
+{
+	unsigned int max = READ_ONCE(sdiohal_tx_xfer_limit);
+
+	return max ? max : sdiohal_rx_xfer_max();
+}
+
 /* for dumpmem */
 unsigned int sdiohal_get_carddump_status(void);
 void sdiohal_set_carddump_status(unsigned int flag);
@@ -536,6 +558,7 @@ int sdiohal_runtime_put(void);
 void sdiohal_register_scan_notify(void *func);
 int sdiohal_scan_card(void);
 void sdiohal_remove_card(void);
+int sdiohal_hw_reset_card(void);
 
 #ifdef SDIO_RESET_DEBUG
 /* Some custome platform not export sdio_reset_comm symbol. */

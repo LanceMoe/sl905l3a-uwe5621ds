@@ -1,5 +1,7 @@
 #include "sdiohal.h"
 
+static unsigned int tx_split_cnt;
+
 #define SDIOHAL_TX_RETRY_MAX 3
 #define SDIOHAL_TX_NO_RETRY
 
@@ -69,19 +71,13 @@ try_send:
 static int sdiohal_send(struct sdiohal_sendbuf_t *send_buf,
 	struct sdiohal_list_t *data_list)
 {
-	unsigned int length;
 	int ret = 0;
 
 	if ((!send_buf) || (!data_list))
 		return -EINVAL;
 
-	length = SDIOHAL_ALIGN_BLK(send_buf->used_len);
-#ifdef CONFIG_MESON_UWE5621
-	/* A block write includes bytes after the current EOF header. */
-	memset(send_buf->buf + send_buf->used_len, 0,
-	       length - send_buf->used_len);
-#endif
-	ret = sdiohal_sdio_pt_write(send_buf->buf, length);
+	ret = sdiohal_sdio_pt_write(send_buf->buf,
+		SDIOHAL_ALIGN_BLK(send_buf->used_len));
 	if (ret != 0) {
 		sdiohal_err("tyr send,type:%d subtype:%d node_num:%d\n",
 				data_list->type, data_list->subtype,
@@ -92,62 +88,18 @@ static int sdiohal_send(struct sdiohal_sendbuf_t *send_buf,
 	return ret;
 }
 
-#ifdef CONFIG_MESON_UWE5621
-static int sdiohal_meson_tx_send(struct sdiohal_list_t *data_list, bool pop_flag)
-{
-    struct sdiohal_data_t *p_data = sdiohal_get_data();
-    struct mbuf_t *node;
-    unsigned int i, span, limit = sdiohal_packet_limit();
-    int ret, result = 0;
-
-    sdiohal_sdma_enter();
-    p_data->send_buf.used_len = 0;
-    node = data_list->mbuf_head;
-    for (i = 0; i < data_list->node_num; i++, node = node->next) {
-        span = sizeof(struct sdio_puh_t) + SDIOHAL_ALIGN_4BYTE(node->len);
-        if (SDIOHAL_ALIGN_BLK(span + SDIO_PUB_HEADER_SIZE) > limit) {
-            pr_err_ratelimited("sdiohal: TX packet %u exceeds single CMD53 limit %u\n",
-                               node->len, limit);
-            if (!result)
-                result = -EMSGSIZE;
-            continue;
-        }
-        if (p_data->send_buf.used_len &&
-            SDIOHAL_ALIGN_BLK(p_data->send_buf.used_len + span +
-                             SDIO_PUB_HEADER_SIZE) > limit) {
-            sdiohal_tx_set_eof(&p_data->send_buf, p_data->eof_buf);
-            ret = sdiohal_send(&p_data->send_buf, data_list);
-            if (ret && !result)
-                result = ret;
-            p_data->send_buf.used_len = 0;
-        }
-        ret = sdiohal_tx_packer(&p_data->send_buf, data_list, node);
-        if (ret && !result)
-            result = ret;
-    }
-    if (p_data->send_buf.used_len) {
-        sdiohal_tx_set_eof(&p_data->send_buf, p_data->eof_buf);
-        ret = sdiohal_send(&p_data->send_buf, data_list);
-        if (ret && !result)
-            result = ret;
-    }
-    p_data->send_buf.used_len = 0;
-    if (pop_flag)
-        sdiohal_tx_list_denq(data_list);
-    sdiohal_sdma_leave();
-    return result;
-}
-#endif
-
 int sdiohal_tx_data_list_send(struct sdiohal_list_t *data_list,
 			      bool pop_flag)
 {
-#ifdef CONFIG_MESON_UWE5621
-    return sdiohal_meson_tx_send(data_list, pop_flag);
-#else
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
 	struct mbuf_t *mbuf_node;
-	unsigned int i;
+	unsigned int i, xfer_max = sdiohal_tx_xfer_max();
+	/*
+	 * Multi-packet writes hang once a crafted RX recovery read has
+	 * aborted the function, so send one packet per write while that
+	 * recovery is in use.
+	 */
+	bool one_per_write = sdiohal_rx_crafted_recovery();
 	int ret = 0;
 
 	sdiohal_sdma_enter();
@@ -158,7 +110,21 @@ int sdiohal_tx_data_list_send(struct sdiohal_list_t *data_list,
 		if (p_data->send_buf.used_len +
 			sizeof(struct sdio_puh_t) +
 			SDIOHAL_ALIGN_4BYTE(mbuf_node->len)
-				> SDIOHAL_TX_SENDBUF_LEN) {
+				> SDIOHAL_TX_SENDBUF_LEN ||
+		    (p_data->send_buf.used_len &&
+		     (one_per_write ||
+		      SDIOHAL_ALIGN_BLK(p_data->send_buf.used_len +
+			sizeof(struct sdio_puh_t) +
+			SDIOHAL_ALIGN_4BYTE(mbuf_node->len) +
+			SDIO_PUB_HEADER_SIZE) > xfer_max))) {
+			tx_split_cnt++;
+			if (tx_split_cnt <= 20 ||
+			    !(tx_split_cnt % 1000))
+				pr_debug("xfer_cap: tx split used=%u next=%u node=%u/%u n=%u\n",
+					 p_data->send_buf.used_len,
+					 mbuf_node->len, i,
+					 data_list->node_num,
+					 tx_split_cnt);
 			sdiohal_tx_set_eof(&p_data->send_buf,
 					   p_data->eof_buf);
 			ret = sdiohal_send(&p_data->send_buf, data_list);
@@ -185,7 +151,6 @@ int sdiohal_tx_data_list_send(struct sdiohal_list_t *data_list,
 	sdiohal_sdma_leave();
 
 	return ret;
-#endif
 }
 
 int sdiohal_tx_thread(void *data)

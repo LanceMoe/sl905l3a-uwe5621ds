@@ -33,9 +33,10 @@
 #include "dbg_ini_util.h"
 #include "tcp_ack.h"
 
-/* Keep initialization and command failures visible during this port. */
-int sprdwl_debug_level = L_INFO;
-module_param_named(log_level, sprdwl_debug_level, int, 0644);
+/* Errors are logged by default; lower to 0 or raise for debugging. */
+int sprdwl_debug_level = L_ERR;
+module_param_named(debug_level, sprdwl_debug_level, int, 0644);
+MODULE_PARM_DESC(debug_level, "Log level: 0=none, 1=error (default), 2=warn, 3=info, 4=debug");
 
 struct device *sprdwl_dev;
 static void adjust_debug_level(char *buf, unsigned char offset)
@@ -587,10 +588,9 @@ static int sprdwl_probe(struct platform_device *pdev)
 	int ret;
 	u8 i;
 
-	ret = start_marlin(MARLIN_WIFI);
-	if (ret) {
-		wl_err("%s power on chipset failed: %d\n", __func__, ret);
-		return ret;
+	if (start_marlin(MARLIN_WIFI)) {
+		wl_err("%s power on chipset failed\n", __func__);
+		return -ENODEV;
 	}
 
 	intf = kzalloc(sizeof(*intf), GFP_ATOMIC);
@@ -615,7 +615,7 @@ static int sprdwl_probe(struct platform_device *pdev)
 				  &sprdwl_core_ops);
 	if (IS_ERR(priv)) {
 		ret = PTR_ERR(priv);
-		pr_err("sprdwl: core creation failed: %d\n", ret);
+		wl_err("%s core create failed: %d\n", __func__, ret);
 		goto err_core_create;
 	}
 	/* Use sizeof() to prevent buffer overflow - fields are only 8 bytes */
@@ -697,13 +697,10 @@ err_tx_init:
 err_rx_init:
 	sprdwl_intf_deinit(intf);
 err_if_init:
-	sprdwl_core_free(priv);
+	sprdwl_core_free((struct sprdwl_priv *)intf->priv);
 err_core_create:
-	platform_set_drvdata(pdev, NULL);
 	kfree(intf);
-	sprdwl_dev = NULL;
 err:
-	stop_marlin(MARLIN_WIFI);
 	return ret;
 }
 
@@ -758,21 +755,19 @@ static int __init unisoc_wlan_init(void)
 	int ret;
 
 	ret = platform_driver_register(&sprdwl_driver);
-	if (ret)
-		return ret;
-	unisoc_pdev = platform_device_register_simple("unisoc_wifi", -1, NULL, 0);
-	if (IS_ERR(unisoc_pdev)) {
-		ret = PTR_ERR(unisoc_pdev);
-		platform_driver_unregister(&sprdwl_driver);
-		return ret;
+	if (!ret) {
+		unisoc_pdev = platform_device_alloc("unisoc_wifi", -1);
+		if (platform_device_add(unisoc_pdev) != 0)
+			wl_err("register platform device unisoc wifi failed\n");
 	}
-	return 0;
+
+	return ret;
 }
 
 static void __exit unisoc_wlan_exit(void)
 {
-	platform_device_unregister(unisoc_pdev);
-	platform_driver_unregister(&sprdwl_driver);
+    platform_driver_unregister(&sprdwl_driver);
+    platform_device_del(unisoc_pdev);
 }
 
 module_init(unisoc_wlan_init);

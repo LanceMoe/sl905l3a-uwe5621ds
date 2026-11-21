@@ -24,10 +24,10 @@
  */
 
 #include <linux/string.h>
+#include <linux/inetdevice.h>
 #include "sprdwl.h"
 #include "cfg80211.h"
 #include "cmdevt.h"
-#include "npi.h"
 #include "work.h"
 #include "ibss.h"
 #include "intf_ops.h"
@@ -46,7 +46,20 @@
 #include "qos.h"
 #endif
 
-#if !defined(CONFIG_CFG80211_INTERNAL_REGDB) || defined(CUSTOM_REGDOMAIN)
+/*
+ * Regulatory source. CONFIG_CFG80211_INTERNAL_REGDB was removed in Linux
+ * 4.15: cfg80211 now loads regulatory.db itself, so the vendor's seven-entry
+ * country table in reg_domain.c (which silently maps every other alpha2,
+ * e.g. FR/DE/GB, onto the "00" world domain and never reflects the result
+ * back to the wiphy) is neither needed nor correct. Let cfg80211 own the
+ * domain and just relay the resulting rules to the firmware.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0) && !defined(CUSTOM_REGDOMAIN)
+#define SPRDWL_CFG80211_REGDB 1
+#endif
+
+#if !defined(SPRDWL_CFG80211_REGDB) && \
+	(!defined(CONFIG_CFG80211_INTERNAL_REGDB) || defined(CUSTOM_REGDOMAIN))
 #include "reg_domain.h"
 #endif
 
@@ -402,9 +415,6 @@ int sprdwl_init_fw(struct sprdwl_vif *vif)
 	u8 *mac;
 #endif
 	u8 vif_ctx_id = 0;
-#ifdef CONFIG_MESON_UWE5621
-	int ret;
-#endif
 
 	wl_ndev_log(L_DBG, vif->ndev, "%s type %d, mode %d\n", __func__, type,
 		    vif->mode);
@@ -457,18 +467,6 @@ int sprdwl_init_fw(struct sprdwl_vif *vif)
 		    __func__, type,
 		    vif->mode, vif->ctx_id);
 	priv->fw_stat[vif->mode] = SPRDWL_INTF_OPEN;
-#ifdef CONFIG_MESON_UWE5621
-    /* cfg80211 may skip set_power_mgmt when its default is already off. */
-    if (mode == SPRDWL_MODE_STATION || mode == SPRDWL_MODE_P2P_CLIENT) {
-        ret = sprdwl_set_sleep_capability(vif, vif->wdev.ps);
-        if (ret) {
-            wl_ndev_log(L_ERR, vif->ndev,
-                        "firmware sleep capability setup failed: %d\n", ret);
-            sprdwl_uninit_fw(vif);
-            return ret;
-        }
-    }
-#endif
 
 	return 0;
 }
@@ -716,6 +714,14 @@ static int sprdwl_add_cipher_key(struct sprdwl_vif *vif, bool pairwise,
 	wl_ndev_log(L_DBG, vif->ndev, "%s %s key_index %d\n", __func__,
 		    pairwise ? "pairwise" : "group", key_index);
 
+	/* IGTK (4-5) protects management frames: not a data cipher */
+	if (key_index > SPRDWL_MAX_KEY_INDEX)
+		return sprdwl_add_key(vif->priv, vif->ctx_id,
+				      vif->key[pairwise][key_index],
+				      vif->key_len[pairwise][key_index],
+				      pairwise, key_index, key_seq,
+				      sprdwl_parse_cipher(cipher), mac_addr);
+
 	if (vif->key_len[pairwise][0] || vif->key_len[pairwise][1] ||
 	    vif->key_len[pairwise][2] || vif->key_len[pairwise][3]) {
 		*cipher_ptr = vif->prwise_crypto = sprdwl_parse_cipher(cipher);
@@ -732,11 +738,23 @@ static int sprdwl_add_cipher_key(struct sprdwl_vif *vif, bool pairwise,
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0) || defined(CM311_CFG80211_WDEV)
 static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
-				   int link_id, u8 key_index, bool pairwise,
+				   int link_id, u8 key_index,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+				   enum nl80211_key_type type,
+#else
+				   bool pairwise,
+#endif
 				   const u8 *mac_addr,
 				   struct key_params *params)
 {
 	struct sprdwl_vif *vif = netdev_priv(wdev->netdev);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+	bool pairwise = (type == NL80211_KEYTYPE_PAIRWISE);
+#endif
+
+	if (key_index >= SPRDWL_NUM_KEY_SLOTS ||
+	    params->key_len > WLAN_MAX_KEY_LEN)
+		return -EINVAL;
 
 	vif->key_index[pairwise] = key_index;
 	vif->key_len[pairwise][key_index] = params->key_len;
@@ -760,6 +778,10 @@ static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct net_device *ndev,
 {
 	struct sprdwl_vif *vif = netdev_priv(ndev);
 
+	if (key_index >= SPRDWL_NUM_KEY_SLOTS ||
+	    params->key_len > WLAN_MAX_KEY_LEN)
+		return -EINVAL;
+
 	vif->key_index[pairwise] = key_index;
 	vif->key_len[pairwise][key_index] = params->key_len;
 	memcpy(vif->key[pairwise][key_index], params->key, params->key_len);
@@ -781,6 +803,10 @@ static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct net_device *ndev,
 				   struct key_params *params)
 {
 	struct sprdwl_vif *vif = netdev_priv(ndev);
+
+	if (key_index >= SPRDWL_NUM_KEY_SLOTS ||
+	    params->key_len > WLAN_MAX_KEY_LEN)
+		return -EINVAL;
 
 	vif->key_index[pairwise] = key_index;
 	vif->key_len[pairwise][key_index] = params->key_len;
@@ -798,92 +824,68 @@ static int sprdwl_cfg80211_add_key(struct wiphy *wiphy, struct net_device *ndev,
 }
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0) || defined(CM311_CFG80211_WDEV)
-static int sprdwl_cfg80211_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
-				   int link_id, u8 key_index, bool pairwise,
-				   const u8 *mac_addr)
+static int sprdwl_del_cipher_key(struct sprdwl_vif *vif, u8 key_index,
+				 bool pairwise, const u8 *mac_addr)
 {
-	struct sprdwl_vif *vif = netdev_priv(wdev->netdev);
-
 	wl_ndev_log(L_DBG, vif->ndev, "%s key_index=%d, pairwise=%d\n",
 		    __func__, key_index, pairwise);
 
-	if (key_index > SPRDWL_MAX_KEY_INDEX) {
-		wl_ndev_log(L_ERR, vif->ndev, "%s key index %d out of bounds!\n", __func__,
-			   key_index);
+	if (key_index >= SPRDWL_NUM_KEY_SLOTS) {
+		wl_ndev_log(L_ERR, vif->ndev, "%s key index %d out of bounds!\n",
+			    __func__, key_index);
 		return -ENOENT;
 	}
 
+	/* Deleting keys that were never set is normal on disconnect */
 	if (!vif->key_len[pairwise][key_index]) {
-		wl_ndev_log(L_ERR, vif->ndev, "%s key index %d is empty!\n", __func__,
-			   key_index);
+		wl_ndev_log(L_DBG, vif->ndev, "%s key index %d is empty\n",
+			    __func__, key_index);
 		return 0;
 	}
 
 	vif->key_len[pairwise][key_index] = 0;
-	vif->prwise_crypto = SPRDWL_CIPHER_NONE;
-	vif->grp_crypto = SPRDWL_CIPHER_NONE;
+	/* Slots 4-5 hold the IGTK; deleting it leaves the data ciphers alone */
+	if (key_index <= SPRDWL_MAX_KEY_INDEX) {
+		vif->prwise_crypto = SPRDWL_CIPHER_NONE;
+		vif->grp_crypto = SPRDWL_CIPHER_NONE;
+	}
 
 	return sprdwl_del_key(vif->priv, vif->ctx_id, key_index,
 			      pairwise, mac_addr);
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0) || defined(CM311_CFG80211_WDEV)
+static int sprdwl_cfg80211_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
+				   int link_id, u8 key_index,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+				   enum nl80211_key_type type,
+#else
+				   bool pairwise,
+#endif
+				   const u8 *mac_addr)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+	bool pairwise = (type == NL80211_KEYTYPE_PAIRWISE);
+#endif
+
+	return sprdwl_del_cipher_key(netdev_priv(wdev->netdev), key_index, pairwise,
+				     mac_addr);
 }
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 static int sprdwl_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev,
 				   int link_id, u8 key_index, bool pairwise,
 				   const u8 *mac_addr)
 {
-	struct sprdwl_vif *vif = netdev_priv(ndev);
-
-	wl_ndev_log(L_DBG, ndev, "%s key_index=%d, pairwise=%d\n",
-		    __func__, key_index, pairwise);
-
-	if (key_index > SPRDWL_MAX_KEY_INDEX) {
-		wl_ndev_log(L_ERR, ndev, "%s key index %d out of bounds!\n", __func__,
-			   key_index);
-		return -ENOENT;
-	}
-
-	if (!vif->key_len[pairwise][key_index]) {
-		wl_ndev_log(L_ERR, ndev, "%s key index %d is empty!\n", __func__,
-			   key_index);
-		return 0;
-	}
-
-	vif->key_len[pairwise][key_index] = 0;
-	vif->prwise_crypto = SPRDWL_CIPHER_NONE;
-	vif->grp_crypto = SPRDWL_CIPHER_NONE;
-
-	return sprdwl_del_key(vif->priv, vif->ctx_id, key_index,
-			      pairwise, mac_addr);
+	return sprdwl_del_cipher_key(netdev_priv(ndev), key_index, pairwise,
+				     mac_addr);
 }
 #else
 static int sprdwl_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev,
 				   u8 key_index, bool pairwise,
 				   const u8 *mac_addr)
 {
-	struct sprdwl_vif *vif = netdev_priv(ndev);
-
-	wl_ndev_log(L_DBG, ndev, "%s key_index=%d, pairwise=%d\n",
-		    __func__, key_index, pairwise);
-
-	if (key_index > SPRDWL_MAX_KEY_INDEX) {
-		wl_ndev_log(L_ERR, ndev, "%s key index %d out of bounds!\n", __func__,
-			   key_index);
-		return -ENOENT;
-	}
-
-	if (!vif->key_len[pairwise][key_index]) {
-		wl_ndev_log(L_ERR, ndev, "%s key index %d is empty!\n", __func__,
-			   key_index);
-		return 0;
-	}
-
-	vif->key_len[pairwise][key_index] = 0;
-	vif->prwise_crypto = SPRDWL_CIPHER_NONE;
-	vif->grp_crypto = SPRDWL_CIPHER_NONE;
-
-	return sprdwl_del_key(vif->priv, vif->ctx_id, key_index,
-			      pairwise, mac_addr);
+	return sprdwl_del_cipher_key(netdev_priv(ndev), key_index, pairwise,
+				     mac_addr);
 }
 #endif
 
@@ -922,6 +924,42 @@ static int sprdwl_cfg80211_set_rekey(struct wiphy *wiphy,
 }
 
 /* SoftAP related stuff */
+
+/*
+ * The firmware takes the AP operating channel from the DS Parameter Set
+ * element of the beacon passed in WIFI_CMD_START_AP; there is no separate
+ * channel command on this path. hostapd and wpa_supplicant only emit that
+ * element on 2.4 GHz, so on 5 GHz the firmware never started beaconing.
+ * Insert it (after SSID/Supported Rates, where 802.11 orders it) when the
+ * head lacks it. @head must have room for 3 more bytes.
+ */
+static int sprdwl_beacon_add_ds_params(u8 *head, int head_len, u8 chan)
+{
+	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)head;
+	u8 *end = head + head_len;
+	u8 *pos = mgmt->u.beacon.variable;
+	u8 *insert;
+
+	if (head_len < offsetof(struct ieee80211_mgmt, u.beacon.variable))
+		return head_len;
+
+	insert = pos;
+	while (pos + 2 <= end && pos + 2 + pos[1] <= end) {
+		if (pos[0] == WLAN_EID_DS_PARAMS)
+			return head_len;
+		if (pos[0] == WLAN_EID_SSID || pos[0] == WLAN_EID_SUPP_RATES)
+			insert = pos + 2 + pos[1];
+		pos += 2 + pos[1];
+	}
+
+	memmove(insert + 3, insert, end - insert);
+	insert[0] = WLAN_EID_DS_PARAMS;
+	insert[1] = 1;
+	insert[2] = chan;
+
+	return head_len + 3;
+}
+
 int sprdwl_change_beacon(struct sprdwl_vif *vif,
 		struct cfg80211_beacon_data *beacon)
 {
@@ -1034,6 +1072,11 @@ static int sprdwl_cfg80211_start_ap(struct wiphy *wiphy,
 		head_len = beacon->head_len;
 		tail_len = beacon->tail_len;
 	}
+
+	if (settings->chandef.chan)
+		head_len = sprdwl_beacon_add_ds_params(head, head_len,
+			is_valid_channel(wiphy, chn) ? chn :
+			settings->chandef.chan->hw_value);
 
 	sprdwl_change_beacon(vif, beacon);
 
@@ -1266,6 +1309,47 @@ sprdwl_cfg80211_change_station(struct wiphy *wiphy,
 #endif
 
 
+static bool sprdwl_vif_is_ap(struct sprdwl_vif *vif)
+{
+	return vif->mode == SPRDWL_MODE_AP || vif->mode == SPRDWL_MODE_P2P_GO;
+}
+
+/*
+ * WIFI_CMD_GET_STATION has no peer address and reports the link of a
+ * station interface only; in AP mode it returns signal 0 and no rate
+ * for whatever MAC is asked. Associated stations are known from the
+ * firmware's LUT events (sprdwl_event_sta_lut), so answer AP-mode
+ * queries from that table instead.
+ */
+static struct sprdwl_peer_entry *sprdwl_ap_peer(struct sprdwl_vif *vif,
+						const u8 *mac, int idx)
+{
+	struct sprdwl_intf *intf = (struct sprdwl_intf *)vif->priv->hw_priv;
+	struct sprdwl_peer_entry *peer;
+	int i;
+
+	for (i = 0; i < MAX_LUT_NUM; i++) {
+		peer = &intf->peer_entry[i];
+		if (peer->ctx_id != vif->ctx_id ||
+		    !is_valid_ether_addr(peer->tx.da) ||
+		    ether_addr_equal(peer->tx.da, vif->ndev->dev_addr))
+			continue;
+		if (mac ? ether_addr_equal(peer->tx.da, mac) : idx-- == 0)
+			return peer;
+	}
+	return NULL;
+}
+
+static void sprdwl_ap_fill_sinfo(struct sprdwl_peer_entry *peer,
+				 struct station_info *sinfo)
+{
+	if (peer->assoc_time) {
+		sinfo->connected_time = ktime_get_boottime_seconds() -
+					peer->assoc_time;
+		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME);
+	}
+}
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0) || defined(CM311_CFG80211_WDEV)
 static int sprdwl_cfg80211_get_station(struct wiphy *wiphy,
 					   struct wireless_dev *wdev, const u8 *mac,
@@ -1275,6 +1359,15 @@ static int sprdwl_cfg80211_get_station(struct wiphy *wiphy,
 	struct sprdwl_cmd_get_station sta;
 	struct sprdwl_rate_info *rate;
 	int ret;
+
+	if (sprdwl_vif_is_ap(vif)) {
+		struct sprdwl_peer_entry *peer = sprdwl_ap_peer(vif, mac, 0);
+
+		if (!peer)
+			return -ENOENT;
+		sprdwl_ap_fill_sinfo(peer, sinfo);
+		return 0;
+	}
 
 	sinfo->filled |= BIT(NL80211_STA_INFO_TX_BYTES) |
 			 BIT(NL80211_STA_INFO_TX_PACKETS) |
@@ -1336,6 +1429,29 @@ static int sprdwl_cfg80211_get_station(struct wiphy *wiphy,
 			rate->mcs, rate->flags);
 out:
 	return ret;
+}
+
+static int sprdwl_cfg80211_dump_station(struct wiphy *wiphy,
+					struct wireless_dev *wdev, int idx,
+					u8 *mac, struct station_info *sinfo)
+{
+	struct sprdwl_vif *vif = netdev_priv(wdev->netdev);
+	struct sprdwl_peer_entry *peer;
+
+	if (!sprdwl_vif_is_ap(vif)) {
+		/* station mode: the one peer is the AP we are associated to */
+		if (idx != 0 || vif->sm_state != SPRDWL_CONNECTED)
+			return -ENOENT;
+		ether_addr_copy(mac, vif->bssid);
+		return sprdwl_cfg80211_get_station(wiphy, wdev, mac, sinfo);
+	}
+
+	peer = sprdwl_ap_peer(vif, NULL, idx);
+	if (!peer)
+		return -ENOENT;
+	ether_addr_copy(mac, peer->tx.da);
+	sprdwl_ap_fill_sinfo(peer, sinfo);
+	return 0;
 }
 
 #else
@@ -2219,7 +2335,7 @@ static int sprdwl_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev,
 		u32 cipher = sme->crypto.cipher_group;
 
 		if (!sme->key || sme->key_len > WLAN_MAX_KEY_LEN ||
-		    sme->key_idx >= ARRAY_SIZE(vif->key[SPRDWL_GROUP])) {
+		    sme->key_idx > SPRDWL_MAX_KEY_INDEX) {
 			wl_ndev_log(L_ERR, ndev,
 				    "%s invalid key index %d or length %d\n",
 				    __func__, sme->key_idx, sme->key_len);
@@ -2598,6 +2714,44 @@ void sprdwl_report_scan_result(struct sprdwl_vif *vif, u16 chan, s16 rssi,
 	}
 }
 
+/*
+ * The firmware filters broadcast ARP itself (ARP offload) and only passes
+ * requests for the address given in WIFI_CMD_NOTIFY_IP_ACQUIRED, which it
+ * forgets on every (re)association. The inetaddr notifier sends it only
+ * when an address is added in station mode, so an address configured
+ * before the association (static address, or one DHCP keeps across a
+ * reconnect, AP restart, roam or resume) never reached the firmware and
+ * peers could not resolve the board until it sent traffic itself. Send
+ * the current IPv4 address again after each successful (re)association.
+ */
+static void sprdwl_renotify_ipv4(struct sprdwl_vif *vif)
+{
+	const struct in_ifaddr *ifa;
+	struct in_device *in_dev;
+	struct sprdwl_work *work;
+	__be32 addr = 0;
+
+	rcu_read_lock();
+	in_dev = __in_dev_get_rcu(vif->ndev);
+	if (in_dev) {
+		ifa = rcu_dereference(in_dev->ifa_list);
+		if (ifa)
+			addr = ifa->ifa_address;
+	}
+	rcu_read_unlock();
+
+	if (!addr)
+		return;
+
+	work = sprdwl_alloc_work(sizeof(addr));
+	if (!work)
+		return;
+	work->vif = vif;
+	work->id = SPRDWL_WORK_NOTIFY_IPV4;
+	memcpy(work->data, &addr, sizeof(addr));
+	sprdwl_queue_work(vif->priv, work);
+}
+
 void sprdwl_report_connection(struct sprdwl_vif *vif,
 					struct sprdwl_connect_info *conn_info,
 					u8 status_code)
@@ -2858,6 +3012,9 @@ lookup_bss:
 	wl_ndev_log(L_DBG, vif->ndev, "%s %s to %s (%pM)\n", __func__,
 		    state == SPRDWL_CONNECTING ?
 			"connect" : "roam", vif->ssid, vif->bssid);
+	if (vif->wdev.iftype == NL80211_IFTYPE_STATION ||
+	    vif->wdev.iftype == NL80211_IFTYPE_P2P_CLIENT)
+		sprdwl_renotify_ipv4(vif);
 	return;
 err:
 	if (bss)
@@ -3550,7 +3707,7 @@ static int sprdwl_cfg80211_set_mac_acl(struct wiphy *wiphy,
 	unsigned char *mac_addr = NULL;
 
 	if (!acl || !acl->n_acl_entries) {
-		wl_ndev_log(L_ERR, ndev, "%s no ACL data\n", __func__);
+		wl_ndev_log(L_DBG, ndev, "%s no ACL data\n", __func__);
 		return 0;
 	}
 
@@ -3589,19 +3746,13 @@ static int sprdwl_cfg80211_set_mac_acl(struct wiphy *wiphy,
 }
 
 static int sprdwl_cfg80211_set_power_mgmt(struct wiphy *wiphy, struct net_device *ndev,
-                                   bool enabled, int timeout)
+				   bool enabled, int timeout)
 {
-    struct sprdwl_vif *vif = netdev_priv(ndev);
-    int ret;
+	struct sprdwl_vif *vif = netdev_priv(ndev);
 
-    wl_ndev_log(L_DBG, ndev, "%s power save status:%d\n", __func__, enabled);
-    ret = sprdwl_power_save(vif->priv, vif->ctx_id,
-                           SPRDWL_SET_PS_STATE, enabled);
-#ifdef CONFIG_MESON_UWE5621
-    if (!ret)
-        ret = sprdwl_set_sleep_capability(vif, enabled);
-#endif
-    return ret;
+	wl_ndev_log(L_DBG, ndev, "%s power save status:%d\n", __func__, enabled);
+	return sprdwl_power_save(vif->priv, vif->ctx_id,
+				 SPRDWL_SET_PS_STATE, enabled);
 }
 
 #ifdef ACS_SUPPORT
@@ -3713,6 +3864,9 @@ static struct cfg80211_ops sprdwl_cfg80211_ops = {
 	.del_station = sprdwl_cfg80211_del_station,
 	.change_station = sprdwl_cfg80211_change_station,
 	.get_station = sprdwl_cfg80211_get_station,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0) || defined(CM311_CFG80211_WDEV)
+	.dump_station = sprdwl_cfg80211_dump_station,
+#endif
 	.libertas_set_mesh_channel = sprdwl_cfg80211_set_channel,
 	.scan = sprdwl_cfg80211_scan,
 	.connect = sprdwl_cfg80211_connect,
@@ -3801,12 +3955,39 @@ static void sprdwl_save_ch_info(struct sprdwl_priv *priv, u32 band, u32 flags, i
 
 }
 
-#if defined(CONFIG_CFG80211_INTERNAL_REGDB) && !defined(CUSTOM_REGDOMAIN)
+/*
+ * The firmware's WIFI_CMD_SET_REGDOM payload is an array of
+ * struct unisoc_reg_rule (freq_range, power_rule, flags, dfs_cac_ms).
+ * Since Linux 4.18 struct ieee80211_reg_rule also carries wmm_rule (and,
+ * later, psd), so memcpy()ing the kernel struct both over-sizes the payload
+ * and lands WMM parameters where the firmware reads flags/dfs_cac_ms. Copy
+ * the four fields explicitly, and mask flags to the bits that existed when
+ * this firmware ABI was defined (NL80211_RRF_NO_160MHZ is bit 16).
+ */
+#define SPRDWL_FW_REG_RULE_FLAGS	GENMASK(16, 0)
+
+static void sprdwl_fill_reg_rule(struct sprdwl_ieee80211_regdomain *rd, u32 i,
+				 const struct ieee80211_reg_rule *reg_rule)
+{
+	rd->reg_rules[i].freq_range = reg_rule->freq_range;
+	rd->reg_rules[i].power_rule = reg_rule->power_rule;
+	rd->reg_rules[i].flags = reg_rule->flags & SPRDWL_FW_REG_RULE_FLAGS;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 15, 0)
+	rd->reg_rules[i].dfs_cac_ms = reg_rule->dfs_cac_ms;
+#else
+	rd->reg_rules[i].dfs_cac_ms = 0;
+#endif
+}
+
+#if defined(SPRDWL_CFG80211_REGDB) || \
+	(defined(CONFIG_CFG80211_INTERNAL_REGDB) && !defined(CUSTOM_REGDOMAIN))
 static void sprdwl_reg_notify(struct wiphy *wiphy,
 			      struct regulatory_request *request)
 {
 	struct sprdwl_priv *priv = wiphy_priv(wiphy);
+#ifdef STA_SOFTAP_SCC_MODE
 	struct sprdwl_intf *intf = (struct sprdwl_intf *)priv->hw_priv;
+#endif
 	struct ieee80211_supported_band *sband;
 	struct ieee80211_channel *chan;
 	const struct ieee80211_freq_range *freq_range;
@@ -3855,8 +4036,7 @@ static void sprdwl_reg_notify(struct wiphy *wiphy,
 		}
 	}
 
-	rd_size = sizeof(struct sprdwl_ieee80211_regdomain) +
-	    n_rules * sizeof(struct ieee80211_reg_rule);
+	rd_size = sizeof(*rd) + n_rules * sizeof(rd->reg_rules[0]);
 
 	rd = kzalloc(rd_size, GFP_KERNEL);
 	if (!rd) {
@@ -3898,8 +4078,7 @@ static void sprdwl_reg_notify(struct wiphy *wiphy,
 			    i < n_rules) {
 				last_start_freq = freq_range->start_freq_khz;
 
-				memcpy(&rd->reg_rules[i], reg_rule,
-				       sizeof(struct ieee80211_reg_rule));
+				sprdwl_fill_reg_rule(rd, i, reg_rule);
 				i++;
 
 				wl_info(
@@ -3998,12 +4177,7 @@ static void sprdwl_reg_notify(struct wiphy *wiphy,
 		}
 	}
 
-	rd_size = sizeof(struct sprdwl_ieee80211_regdomain) +
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 15, 0))
-	    n_rules * sizeof(struct ieee80211_reg_rule);
-#else
-	    n_rules * sizeof(struct unisoc_reg_rule);
-#endif
+	rd_size = sizeof(*rd) + n_rules * sizeof(rd->reg_rules[0]);
 
 	rd = kzalloc(rd_size, GFP_KERNEL);
 	if (!rd) {
@@ -4046,11 +4220,7 @@ static void sprdwl_reg_notify(struct wiphy *wiphy,
 			    i < n_rules) {
 				last_start_freq = freq_range->start_freq_khz;
 
-				memcpy(&rd->reg_rules[i], reg_rule,
-				       sizeof(struct ieee80211_reg_rule));
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0))
-				rd->reg_rules[i].dfs_cac_ms = 0;
-#endif
+				sprdwl_fill_reg_rule(rd, i, reg_rule);
 				i++;
 
 				wiphy_dbg(wiphy,
@@ -4112,7 +4282,8 @@ void sprdwl_setup_wiphy(struct wiphy *wiphy, struct sprdwl_priv *priv)
 	struct wiphy_sec2_t *sec2 = NULL;
 	struct ieee80211_sta_vht_cap *vht_info = NULL;
 	struct ieee80211_sta_ht_cap *ht_info = NULL;
-#if !defined (CONFIG_CFG80211_INTERNAL_REGDB) || defined(CUSTOM_REGDOMAIN)
+#if !defined(SPRDWL_CFG80211_REGDB) && \
+	(!defined(CONFIG_CFG80211_INTERNAL_REGDB) || defined(CUSTOM_REGDOMAIN))
 	const struct ieee80211_regdomain *pRegdom;
 	char alpha2[2];
 #endif
@@ -4263,7 +4434,8 @@ void sprdwl_setup_wiphy(struct wiphy *wiphy, struct sprdwl_priv *priv)
 		wl_info("\tIEEE802.11d supported\n");
 		wiphy->reg_notifier = sprdwl_reg_notify;
 
-#if !defined (CONFIG_CFG80211_INTERNAL_REGDB) || defined(CUSTOM_REGDOMAIN)
+#if !defined(SPRDWL_CFG80211_REGDB) && \
+	(!defined(CONFIG_CFG80211_INTERNAL_REGDB) || defined(CUSTOM_REGDOMAIN))
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0))
 		wiphy->regulatory_flags |= REGULATORY_CUSTOM_REG;
 #else
@@ -4365,10 +4537,8 @@ struct sprdwl_priv *sprdwl_core_create(enum sprdwl_hw_type type,
 
 	sprdwl_check_intf_ops(ops);
 	ret = sprdwl_cmd_init();
-	if (ret) {
-		pr_err("sprdwl: command initialization failed: %d\n", ret);
+	if (ret)
 		return ERR_PTR(ret);
-	}
 
 	wiphy = wiphy_new(&sprdwl_cfg80211_ops, sizeof(*priv));
 	if (!wiphy) {
@@ -4416,16 +4586,15 @@ struct sprdwl_priv *sprdwl_core_create(enum sprdwl_hw_type type,
 
 void sprdwl_core_free(struct sprdwl_priv *priv)
 {
+	struct wiphy *wiphy;
+
 	if (IS_ERR_OR_NULL(priv))
 		return;
-	if (priv)
-		sprdwl_deinit_work(priv);
-	sprdwl_cmd_deinit();
-	if (priv) {
-		struct wiphy *wiphy = priv->wiphy;
 
-		if (wiphy)
-			wiphy_free(wiphy);
-		g_sprdwl_priv = NULL;
-	}
+	wiphy = priv->wiphy;
+	sprdwl_deinit_work(priv);
+	sprdwl_cmd_deinit();
+	if (wiphy)
+		wiphy_free(wiphy);
+	g_sprdwl_priv = NULL;
 }

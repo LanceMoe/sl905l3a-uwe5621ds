@@ -99,6 +99,15 @@ config AW_BIND_VERIFY
 	  please say "y".
 	  Thanks.
 
+config AML_WIFI_DEVICE_UWE5621
+	bool "amlogic board Support for uwe5621 / uwe5621ds"
+	default n
+	help
+	  Enable the Unisoc BSP for Amlogic boards with UWE5621 or
+	  UWE5621DS (e.g. on G12A). Builds uwe5621_bsp_sdio
+	  with meson-safe SDIO flags (no ADMA, 512B blocks, polling /
+	  IRQ companion as configured in the Makefile).
+
 # sprd's boot driver based on SC2342-integ...,etc
 #source "drivers/misc/sprdwcn/boot/Kconfig"
 

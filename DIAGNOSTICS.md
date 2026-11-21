@@ -2,7 +2,6 @@
 
 本项目提供了一组非破坏性的状态采集与无线链路质量测试脚本，用于在盒子上排查驱动加载失败、SDIO 传输异常或测试不同参数下的丢包与延迟表现。
 
-历史排障过程与 v1–v8 实机测试数据请参阅 **[移植与实验记录 (docs/PORTING.md)](docs/PORTING.md)**。
 
 ---
 
@@ -13,7 +12,7 @@
    - [模式 A：多包长与 MTU 边界探测（默认）](#模式-a多包长与-mtu-边界探测默认)
    - [模式 B：持续流量稳定性观察 (`--soak-seconds`)](#模式-b持续流量稳定性观察---soak-seconds)
    - [模式 C：TX ADDBA 重试间隔三阶段对照 (`--addba-compare-seconds`)](#模式-ctx-addba-重试间隔三阶段对照---addba-compare-seconds)
-3. [辅助调试脚本 (`load-test.sh` / `collect-state.sh` / `poll-existing.sh`)](#3-辅助调试脚本-load-testsh--collect-statesh--poll-existingsh)
+3. [辅助调试脚本](#3-辅助调试脚本-scriptsload-testsh--scriptscollect-statesh)
 4. [诊断包收录内容与安全边界](#4-诊断包收录内容与安全边界)
 
 ---
@@ -55,7 +54,7 @@ bash scripts/test-link.sh
 ```
 
 - 绑定 `-I wlan0` 分别向 `wlan0` 的默认网关和公网 `1.1.1.1` 发送禁止分片（`-M do`）的探测包。
-- 依次测试 ICMP payload `56`、`1200`、`1372`、`1440`、`1452`、`1472` 字节（对应 IPv4 总长 = payload + 28，即 `84` 至 `1500` 字节）。在默认 MTU 1400 下，超过 1400 字节的探测会被本机协议栈直接拒绝（`local error: message too long, mtu=1400`）。
+- 依次测试 ICMP payload `56`、`1200`、`1372`、`1440`、`1452`、`1472` 字节（对应 IPv4 总长 = payload + 28，即 `84` 至 `1500` 字节）。当 MTU 为 1400 时，超过 1400 字节的探测会被本机协议栈直接拒绝（`local error: message too long, mtu=1400`）。
 - 若测试开始时网卡 MTU 大于 1400，脚本会临时将 MTU 设为 1400 补测 payload `56` 和 `1372`，并在结束或 `Ctrl+C` 中断时恢复原 MTU。
 - 测试期间自动开启 SDIO 详细日志，结束后恢复普通日志；若系统安装了 `tcpdump`，还会自动抓取 ICMP 包前 128 字节头部。
 
@@ -87,13 +86,11 @@ bash scripts/test-link.sh --addba-compare-seconds 180
 
 ---
 
-## 3. 辅助调试脚本 (`load-test.sh` / `collect-state.sh` / `poll-existing.sh`)
 
 | 脚本 | 用途说明 |
 | --- | --- |
 | `sudo bash scripts/load-test.sh` | 在未安装到系统前，使用 `insmod` 临时加载当前 `dist/$(uname -r)/` 下的模块并检查平台驱动绑定，日志输出到 `dist/$(uname -r)/load-*.log`。支持 `SDIO_TRACE=1` 开启底层包跟踪日志。 |
 | `bash scripts/collect-state.sh` | 纯只读采集当前进程状态、内核栈、sysfs/debugfs 与 SDIO 计数，不执行任何模块加载或参数写入（适合在另一终端发生阻塞时安全取证）。 |
-| `bash scripts/poll-existing.sh` | 历史 v4 排障工具：在未开启 RX 等待兜底且接收中断为 0 的现场，通过 `switch_irq` 触发轮询并打包（v5 及之后版本已内置 20 ms 接收等待兜底，日常无需使用）。 |
 
 ---
 

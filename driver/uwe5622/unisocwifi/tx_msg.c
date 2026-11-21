@@ -19,6 +19,7 @@
 #include <linux/utsname.h>
 #include <linux/kernel.h>
 #include <linux/workqueue.h>
+#include <linux/moduleparam.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <net/ip.h>
@@ -858,6 +859,11 @@ static int handle_tx_timeout(struct sprdwl_tx_msg *tx_msg,
 	return 0;
 }
 
+static unsigned int tx_aggr;
+module_param(tx_aggr, uint, 0644);
+MODULE_PARM_DESC(tx_aggr,
+		 "Max data frames handed to the bus per TX push (0: no limit)");
+
 static int sprdwl_handle_to_send_list(struct sprdwl_intf *intf,
 				      enum sprdwl_mode mode)
 {
@@ -867,6 +873,7 @@ static int sprdwl_handle_to_send_list(struct sprdwl_intf *intf,
 	int tosendnum = 0, credit = 0, ret = 0;
 	struct sprdwl_msg_list *list = &tx_msg->tx_list_qos_pool;
 	u8 coex_bt_on = intf->coex_bt_on;
+	unsigned int aggr;
 
 #ifdef CP2_RESET_SUPPORT
 	if (intf->cp_asserted == 1)
@@ -879,6 +886,9 @@ static int sprdwl_handle_to_send_list(struct sprdwl_intf *intf,
 		spin_lock_bh(t_lock);
 		tosendnum = get_list_num(to_send_list);
 		spin_unlock_bh(t_lock);
+		aggr = READ_ONCE(tx_aggr);
+		if (aggr && tosendnum > aggr)
+			tosendnum = aggr;
 		credit = sprdwl_fc_get_send_num(tx_msg, mode, tosendnum);
 		if (credit < tosendnum)
 			wl_err("%s, %d,error! credit:%d,tosendnum:%d\n",
@@ -1191,35 +1201,28 @@ exit:
 }
 
 static void prepare_addba(struct sprdwl_intf *intf, unsigned char lut_index,
-                           struct sk_buff *skb, struct sprdwl_peer_entry *peer_entry,
-                           unsigned char tid)
+		   struct sk_buff *skb, struct sprdwl_peer_entry *peer_entry,
+		   unsigned char tid)
 {
-    unsigned int retry_ms = READ_ONCE(tx_addba_retry_ms);
-    struct timespec64 now;
-    s64 elapsed_ns;
+	if (intf->tx_num[lut_index] > 9 &&
+		peer_entry &&
+		(peer_entry->ip_acquired || !sprdwl_is_group(skb->data)) &&
+		peer_entry->ht_enable &&
+		peer_entry->vowifi_enabled != 1 &&
+		!test_bit(tid, &peer_entry->ba_tx_done_map)) {
+		struct timespec time;
 
-    if (!retry_ms || !peer_entry || lut_index >= MAX_LUT_NUM ||
-        tid >= ARRAY_SIZE(peer_entry->time))
-        return;
-    retry_ms = min(retry_ms, 300000U);
-    if (intf->tx_num[lut_index] <= 9 ||
-        !(peer_entry->ip_acquired || !sprdwl_is_group(skb->data)) ||
-        !peer_entry->ht_enable || peer_entry->vowifi_enabled == 1 ||
-        test_bit(tid, &peer_entry->ba_tx_done_map))
-        return;
-
-    ktime_get_ts64(&now);
-    elapsed_ns = timespec64_to_ns(&now) -
-                 timespec64_to_ns(&peer_entry->time[tid]);
-    if ((peer_entry->time[tid].tv_sec || peer_entry->time[tid].tv_nsec) &&
-        elapsed_ns < (s64)retry_ms * NSEC_PER_MSEC)
-        return;
-    /* Only one request can own the pending/done bit for a peer/TID. */
-    if (test_and_set_bit(tid, &peer_entry->ba_tx_done_map))
-        return;
-    peer_entry->time[tid] = now;
-    wl_debug("%s: TX ADDBA tid=%u retry_ms=%u\n", __func__, tid, retry_ms);
-    sprdwl_tx_addba(intf, peer_entry, tid);
+		getnstimeofday(&time);
+		/*need to delay 3s if priv addba failed*/
+		if (((timespec_to_ns(&time) - timespec_to_ns(&peer_entry->time[tid]))/1000000) > 3000 ||
+			peer_entry->time[tid].tv_nsec == 0) {
+			wl_debug("%s, %d, tx_addba, tid=%d\n",
+				__func__, __LINE__, tid);
+			getnstimeofday(&peer_entry->time[tid]);
+			test_and_set_bit(tid, &peer_entry->ba_tx_done_map);
+			sprdwl_tx_addba(intf, peer_entry, tid);
+		}
+	}
 }
 
 int sprdwl_tx_msg_func(void *pdev, struct sprdwl_msg_buf *msg)

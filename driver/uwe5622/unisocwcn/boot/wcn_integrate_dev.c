@@ -21,7 +21,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/mfd/syscon.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 #include <linux/gpio/consumer.h>
 #else
 #include <linux/of_gpio.h>

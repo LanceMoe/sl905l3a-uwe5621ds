@@ -72,38 +72,6 @@ static int sprdwl_get_flag(void)
 	return flag;
 }
 
-/* The firmware has a sleep capability separate from WIFI_CMD_POWER_SAVE. */
-int sprdwl_set_sleep_capability(struct sprdwl_vif *vif, bool enabled)
-{
-    struct {
-        struct sprdwl_npi_cmd_hdr header;
-        __le32 capability;
-    } __packed request = {
-        .header = {
-            .type = SPRDWL_HT2CP_CMD,
-            .subtype = SPRDWL_NPI_CMD_SET_WLAN_CAP,
-            .len = cpu_to_le16(sizeof(__le32)),
-        },
-        .capability = cpu_to_le32(enabled ? SPRDWL_STA_GC_EN_SLEEP :
-                                           SPRDWL_STA_GC_NO_SLEEP),
-    };
-    struct sprdwl_npi_cmd_resp_hdr reply = {0};
-    u16 length = sizeof(reply);
-    int ret;
-
-    ret = sprdwl_npi_send_recv(vif->priv, vif->ctx_id, (u8 *)&request,
-                              sizeof(request), (u8 *)&reply, &length);
-    if (ret)
-        return ret;
-    if (length != sizeof(reply) || reply.type != SPRDWL_CP2HT_REPLY ||
-        reply.subtype != SPRDWL_NPI_CMD_SET_WLAN_CAP ||
-        le16_to_cpu(reply.len) != sizeof(reply.status))
-        return -EPROTO;
-    if (le32_to_cpu(reply.status))
-        return -EIO;
-    return 0;
-}
-
 static int sprdwl_cmd_set_psm_cap(struct sprdwl_vif *vif)
 {
 	struct sprdwl_priv *priv = NULL;
@@ -224,10 +192,6 @@ static int sprdwl_nl_npi_handler(struct sk_buff *skb_2, struct genl_info *info)
 		wl_err("%s: invalid content\n", __func__);
 		return -EPERM;
 	}
-	if (nla_len(info->attrs[SPRDWL_NL_ATTR_AP2CP]) <
-	    sizeof(struct sprdwl_npi_cmd_hdr))
-		return -EINVAL;
-
 	r_buf = kmalloc(1024, GFP_KERNEL);
 	if (!r_buf)
 		return -ENOMEM;
@@ -301,8 +265,8 @@ static int sprdwl_nl_get_info_handler(struct sk_buff *skb_2,
 	int ret = 0;
 
 	if (vif) {
-		/* pre_doit holds the netdev reference, released by post_doit. */
 		ether_addr_copy(r_buf, vif->ndev->dev_addr);
+		sprdwl_put_vif(vif);
 		r_len = 6;
 		ret = sprdwl_nl_send_generic(info, SPRDWL_NL_ATTR_CP2AP,
 					     SPRDWL_NL_CMD_GET_INFO, r_len,
@@ -315,7 +279,6 @@ static int sprdwl_nl_get_info_handler(struct sk_buff *skb_2,
 }
 
 static struct nla_policy __maybe_unused sprdwl_genl_policy[SPRDWL_NL_ATTR_MAX + 1] = {
-	[SPRDWL_NL_ATTR_IFINDEX] = {.type = NLA_U32},
 	[SPRDWL_NL_ATTR_AP2CP] = {.type = NLA_BINARY, .len = 1024},
 	[SPRDWL_NL_ATTR_CP2AP] = {.type = NLA_BINARY, .len = 1024}
 };
@@ -323,7 +286,6 @@ static struct nla_policy __maybe_unused sprdwl_genl_policy[SPRDWL_NL_ATTR_MAX + 
 static struct genl_ops sprdwl_nl_ops[] = {
 	{
 		.cmd = SPRDWL_NL_CMD_NPI,
-		.flags = GENL_ADMIN_PERM,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
 //		.policy = sprdwl_genl_policy,
 #else
@@ -333,7 +295,6 @@ static struct genl_ops sprdwl_nl_ops[] = {
 	},
 	{
 		.cmd = SPRDWL_NL_CMD_GET_INFO,
-		.flags = GENL_ADMIN_PERM,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
 //		.policy = sprdwl_genl_policy,
 #else
@@ -349,9 +310,6 @@ static struct genl_family sprdwl_nl_genl_family = {
 	.name = "SPRDWL_NL",
 	.version = 1,
 	.maxattr = SPRDWL_NL_ATTR_MAX,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
-	.policy = sprdwl_genl_policy,
-#endif
 	.pre_doit = sprdwl_npi_pre_doit,
 	.post_doit = sprdwl_npi_post_doit,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)

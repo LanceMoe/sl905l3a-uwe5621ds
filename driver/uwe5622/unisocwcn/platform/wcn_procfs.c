@@ -96,7 +96,7 @@ void mdbg_assert_interface(char *str)
 #endif
 
 	memset(mdbg_proc->assert.buf, 0, MDBG_ASSERT_SIZE);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
 	strscpy(mdbg_proc->assert.buf, str, MDBG_ASSERT_SIZE);
 #else
 	strncpy(mdbg_proc->assert.buf, str, len);

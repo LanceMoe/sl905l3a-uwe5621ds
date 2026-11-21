@@ -99,23 +99,17 @@ def prepare(project, inputs, output, tag, kernel, repository, commit, runner=com
     asset = f'cm311-uwe5621ds-{version}-{kernel}.tar.gz'
     notes = f'''# CM311 UWE5621DS {tag}
 
-本次交付包含固件休眠能力同步修复：STA/P2P Client 初始化与省电设置同步固件休眠状态，
-并校验固件应答；同时修复控制通道、网卡注销及 SDIO 移除问题。
-实机重启后，Windows 有线主机 ping 无线地址 60 包零丢包，RTT 平均 7 ms（2–16 ms）。
-详见 [更新日志](https://github.com/{repository}/blob/{tag}/CHANGELOG.md) 与
-[入站延迟验证](https://github.com/{repository}/blob/{tag}/docs/INBOUND-LATENCY.md)。
-
-驱动补丁标记仍为 v8：MTU 1400，TX ADDBA 重试间隔 30000 ms。
+驱动支持范围和实机结论见 [README.md](https://github.com/{repository}/blob/{tag}/README.md)。
 
 **本次预编译模块仅适用于 ARM64 / Linux `{kernel}`。**
 内核以 `uname -r` 为准，必须完全一致。`6.18.37-ophub` 与 `6.18.56-ophub` 的模块不能互换。
-若当前内核没有对应二进制包，请下载源码包在精确头文件上构建，或使用已实测的本机 v8 模块及集成更新包。
+若当前内核没有对应二进制包，请下载源码包，使用与当前内核匹配的头文件构建。
 
 | 附件 | 用途 |
 | --- | --- |
 | `{asset}` | 两个预编译模块、对应源码与安装/回退工具 |
 | `cm311-uwe5621ds-{version}-source.tar.gz` | 完整源码，无预编译模块 |
-| `cm311-uwe5621ds-{version}-integration.tar.gz` | 给现有 v8 目录更新系统集成工具 |
+| `cm311-uwe5621ds-{version}-integration.tar.gz` | 系统集成文件及源码，无预编译模块 |
 | `INSTALL.md` | 二进制下载、校验、安装、开机验证与卸载说明 |
 | `SHA256SUMS` / 各文件 `.sha256` | 交付文件校验 |
 | `RELEASE.json` | 二进制内核列表与源提交身份 |

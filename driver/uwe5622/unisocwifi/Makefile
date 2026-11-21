@@ -17,9 +17,6 @@ ccflags-y += -DCUSTOMIZE_WIFI_MAC_FILE=\"$(UNISOC_WIFI_MAC_FILE)\"
 endif
 
 ####add cflag######
-ccflags-$(CONFIG_MESON_UWE5621) += -DCONFIG_MESON_UWE5621
-# Detect backported cfg80211 APIs from the target headers.
-ccflags-y += $(CM311_COMPAT_CFLAGS)
 ccflags-y += -DIBSS_SUPPORT -DIBSS_RSN_SUPPORT
 ccflags-y += -DNAN_SUPPORT
 ccflags-y += -DRTT_SUPPORT

@@ -70,9 +70,6 @@ enum sprdwl_npi_cmd_type {
 	SPRDWL_CP2HT_REPLY,
 };
 
-struct sprdwl_vif;
-int sprdwl_set_sleep_capability(struct sprdwl_vif *vif, bool enabled);
-
 void sprdwl_init_npi(void);
 void sprdwl_deinit_npi(void);
 #endif /*__NPI_H__*/
