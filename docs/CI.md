@@ -17,11 +17,11 @@ Push / Pull Request / 手动 Run workflow 都执行：
 4. 下载明确版本的编译器与内核头文件，验证 SHA-256，实际编译两个 ARM64 模块及 MODPOST。
 5. 生成匹配内核的模块包（含对应源码、配置、安装工具和文件清单），上传构建日志。
 
-默认目标在 `ci/kernel.json`：`6.18.56-ophub`，用于编译回归。
+默认目标在 `ci/kernel.json`：`6.18.64-ophub`，用于编译回归。
 `6.18.37-ophub` 是实机验证目标，当前仓库不提供其他内核冒充该版本的模块。
 CI 成功不代表已验证真实 SDIO 硬件、启动顺序或无线链路质量。
 
-下载默认头文件时，校验整个 6.18.56 内核归档，再仅提取其中的 header 归档。
+下载默认头文件时，校验整个 6.18.64 内核归档，再仅提取其中的 header 归档。
 使用安全 tar 提取规则，并检查 UTS_RELEASE、autoconf 和 Module.symvers。
 不会跟随归档中的 DT/include-prefix 符号链接；这些别名不参与当前外部模块构建。
 只重建 x86_64 主机执行的 fixdep/modpost，不修改 ARM64 的 elfconfig、设备表偏移或符号版本表。
@@ -78,11 +78,11 @@ Release 附件包括：
 - 可直接阅读的 `INSTALL.md` 和包含可用二进制内核/源提交的 `RELEASE.json`。
 
 模块包本身包含对应源码。Release 说明会明确列出实际构建内核，
-不会把 `6.18.56-ophub` 二进制描述为适用于实机 `6.18.37-ophub`。
+不会把 `6.18.64-ophub` 二进制描述为适用于实机 `6.18.37-ophub`。
 
 ### 让自动 Release 构建实机 6.18.37 的二进制
 
-目前固定上游下载配置只提供已校验的 6.18.56 构建输入。
+目前固定上游下载配置只提供已校验的 6.18.64 构建输入。
 要发布 6.18.37 二进制，须提供这台盒子精确的、已准备的头文件与 Module.symvers，不能拿其他版本替代。
 可在盒子上打包，不会加载驱动或重启：
 
@@ -120,7 +120,7 @@ bash scripts/run-tests.sh
 bash scripts/fetch-toolchain.sh
 python3 ci/prepare-headers.py
 # 上一步打印 KDIR 和 KERNEL_RELEASE；设置为相应值后构建。
-KERNEL_RELEASE=6.18.56-ophub KDIR="$PWD/.cache/ci-headers-6.18.56-ophub" \
+KERNEL_RELEASE=6.18.64-ophub KDIR="$PWD/.cache/ci-headers-6.18.64-ophub" \
   CROSS_COMPILE="$PWD/.cache/toolchain/bin/aarch64-none-linux-gnu-" bash scripts/build.sh
 ```
 
@@ -132,7 +132,7 @@ KERNEL_RELEASE=6.18.56-ophub KDIR="$PWD/.cache/ci-headers-6.18.56-ophub" \
 ```bash
 python3 scripts/package.py --kind source
 python3 scripts/package.py --kind integration
-python3 scripts/package.py --kind modules --kernel-release 6.18.56-ophub
+python3 scripts/package.py --kind modules --kernel-release 6.18.64-ophub
 ```
 
 - `cm311-uwe5621ds-0.9.0-source.tar.gz`：项目和应用补丁后的源码，可离线开始构建。

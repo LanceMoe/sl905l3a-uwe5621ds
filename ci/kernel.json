@@ -1,5 +1,5 @@
 {
-  "release": "6.18.56-ophub",
-  "url": "https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.56.tar.gz",
-  "sha256": "a0a963df0170dd61631b895970394b0443f0c7b9dddb8c8f4238c4613e4e96c0"
+  "release": "6.18.64-ophub",
+  "url": "https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.64.tar.gz",
+  "sha256": "6d7ba9ffee7b84ecb2f9095b3b9441f83bdce8a2e2e7958c18795c8d59eb7812"
 }
