@@ -1,0 +1,47 @@
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	sdio-route {
+		compatible = "cm311,sdio-route";
+
+		sdio_route_b: sdio-pads {};
+	};
+};
+
+&{/soc/bus@ff600000/bus@34400/pinctrl@40} {
+	sdio_b_pads: sdio-b-pads {
+		data-cmd {
+			groups = "GPIOX_0", "GPIOX_1", "GPIOX_2", "GPIOX_3", "GPIOX_5";
+			function = "gpio_periphs";
+			input-enable;
+			bias-pull-up;
+			drive-strength-microamp = <4000>;
+		};
+
+		clk {
+			groups = "GPIOX_4";
+			function = "gpio_periphs";
+			output-high;
+			bias-pull-up;
+			drive-strength-microamp = <4000>;
+		};
+	};
+};
+
+&sd_emmc_b {
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio_b_pads &sdio_route_b>;
+	non-removable;
+	keep-power-in-suspend;
+	no-sd;
+	no-mmc;
+	sd-uhs-sdr50;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	wifi@1 {
+		compatible = "sprd,unisoc-wifi";
+		reg = <1>;
+	};
+};

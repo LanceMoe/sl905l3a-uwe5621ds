@@ -28,6 +28,9 @@
 #include "rx_msg.h"
 #include "wl_core.h"
 #include "tcp_ack.h"
+#ifdef CONFIG_MESON_UWE5621
+#include <wcn_bus.h>
+#endif
 #ifdef DFS_MASTER
 #include "11h.h"
 #endif
@@ -956,8 +959,10 @@ static int sprdwl_set_mac(struct net_device *dev, void *addr)
 static void sprdwl_meson_limit_mtu(struct net_device *ndev)
 {
 #ifdef CONFIG_MESON_UWE5621
-    ndev->mtu = 1400;
-    ndev->max_mtu = 1400;
+    unsigned int mtu = sdiohal_packet_limit() >= 2048 ? ETH_DATA_LEN : 1400;
+
+    ndev->mtu = mtu;
+    ndev->max_mtu = mtu;
 #endif
 }
 
@@ -1459,7 +1464,10 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
 	ndev->needed_headroom = priv->skb_head_len;
     sprdwl_meson_limit_mtu(ndev);
 	ndev->watchdog_timeo = 2 * HZ;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)
+#if defined(CONFIG_MESON_UWE5621)
+	/* UWE5621DS can stop returning TX credits with checksum offload. */
+	ndev->features &= ~NETIF_F_CSUM_MASK;
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)
 	ndev->features |= NETIF_F_CSUM_MASK;
 #else
 	ndev->features |= NETIF_F_ALL_CSUM;

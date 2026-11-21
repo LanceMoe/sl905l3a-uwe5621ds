@@ -34,13 +34,13 @@
 | **设备树 (DTB)** | `meson-g12a-s905l3a-cm311.dtb` |
 | **系统固件路径** | `/lib/firmware/uwe5621ds/`（`wcnmodem.bin` + `wifi_56630001_3ant.ini`） |
 | **驱动模块** | `uwe5621_bsp_sdio.ko`（WCN/SDIO 传输层）+ `sprdwl_ng.ko`（Wi-Fi 驱动层） |
-| **默认运行参数** | 网卡 MTU `1400`；TX ADDBA 协商重试间隔 `30000 ms` |
+| **默认运行参数** | 网卡 MTU 由 SDIO 控制器能力决定，TX ADDBA 协商重试间隔 `30000 ms` |
 
 ### 可用性说明与已知限制
 
 - **已验证功能**：固件下载、芯片校准握手、2.4G/5G 扫描、WPA2/WPA3 关联、DHCP 获取地址、局域网与公网通信。在 v8 实机持续测试中，网关丢包率约 0.56%（平均 RTT 44 ms），公网丢包率约 1.11%（平均 RTT 38 ms），无内核崩溃或固件复位。
 - **入站延迟修复（0.8.1）**：同步 cfg80211 省电状态与固件独立的休眠能力，避免显示关闭省电但空闲入站仍高延迟。修复并重启后，Windows 有线主机到盒子无线地址的 60 包复测零丢包，RTT 平均 7 ms（2–16 ms）。单独的入站探测仍偶有延迟尖峰，长期稳定性尚未验证，详见 [入站延迟排查](docs/INBOUND-LATENCY.md)。
-- **MTU 1400 限制**：受晶晨 G12A SDIO 控制器 `amlogic,dram-access-quirk` 的 1536 字节单次 CMD53 SRAM 缓冲限制，网卡默认及最大 MTU 设为 **1400**（不支持完整 MTU 1500）。
+- **SDIO 控制器与 MTU**。原设备树通过 SD_EMMC_A 的 1536 字节 SRAM 访问 Wi-Fi，网卡 MTU 上限为 **1400**。CM311-1a YST 从 eMMC 启动时，可以[改用 SD_EMMC_B](INSTALL.md#使用-sd_emmc_b-修复接收卡住)，用 DMA 传输完整的 **MTU 1500** 数据包。
 - **未支持范围**：目前仅支持 Wi-Fi，暂不支持蓝牙与系统休眠恢复（Suspend/Resume）。
 
 ---
@@ -181,9 +181,9 @@ nmcli device wifi list ifname wlan0
 sudo nmcli --ask device wifi connect "你的Wi-Fi名称(SSID)" ifname wlan0
 ```
 
-### 5.3 配置 MTU 1400、关闭省电与开机自动重连（重要）
+### 5.3 配置 MTU、关闭省电与开机自动重连
 
-连接成功后，建议固定该 Wi-Fi 配置的 **MTU 为 1400**、**关闭 802.11 协议栈省电模式**，并开启**开机自动连接**：
+连接成功后，关闭 802.11 省电并开启自动连接。原设备树使用下例中的 MTU `1400`。使用 SD_EMMC_B 的设备可改为 `1500`。
 
 ```bash
 # 1. 查看已保存的 Wi-Fi 连接名称 (NAME) 与 UUID

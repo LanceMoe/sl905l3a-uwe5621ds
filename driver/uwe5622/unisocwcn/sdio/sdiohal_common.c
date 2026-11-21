@@ -554,11 +554,11 @@ static int sdiohal_tx_fill_puh(int channel, struct mbuf_t *head,
 			return -EFAULT;
 		}
 		puh = (struct sdio_puh_t *)mbuf_node->buf;
-		puh->type = type;
-		puh->subtype = subtype;
-		puh->len = mbuf_node->len;
-		puh->eof = 0;
-		puh->pad = 0;
+		*puh = (struct sdio_puh_t) {
+			.type = type,
+			.subtype = subtype,
+			.len = mbuf_node->len,
+		};
 	}
 
 	return 0;

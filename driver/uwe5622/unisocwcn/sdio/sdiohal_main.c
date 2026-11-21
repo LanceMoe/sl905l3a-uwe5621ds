@@ -294,7 +294,7 @@ unsigned int sdiohal_get_trans_pac_num(void)
 unsigned int sdiohal_packet_limit(void)
 {
     struct sdiohal_data_t *p_data = sdiohal_get_data();
-    struct sdio_func *func = p_data->sdio_func[FUNC_1];
+    struct sdio_func *func = p_data ? p_data->sdio_func[FUNC_1] : NULL;
     struct mmc_host *host;
     unsigned int limit, blocks, bytes, block;
 
@@ -312,10 +312,13 @@ unsigned int sdiohal_packet_limit(void)
                            MMC_QUIRK_BROKEN_BYTE_MODE_512) ? 511U : 512U);
         limit = min(limit, bytes);
     }
-    /* TX stays within physical SRAM even with the RX streaming host. */
-    limit = min(limit, 1536U);
+    /* The experimental streaming host extends RX only. */
+    if (host->parent->driver &&
+        !strcmp(host->parent->driver->name, "cm311-sdio-rx"))
+        limit = min(limit, 1536U);
     return (limit / block) * block;
 }
+EXPORT_SYMBOL_GPL(sdiohal_packet_limit);
 
 int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen)
 {

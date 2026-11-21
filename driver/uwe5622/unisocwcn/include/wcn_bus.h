@@ -9,6 +9,10 @@
 #define PUB_HEAD_RSV 0
 #endif
 
+#ifdef CONFIG_MESON_UWE5621
+unsigned int sdiohal_packet_limit(void);
+#endif
+
 enum wcn_hw_type {
 	HW_TYPE_SDIO = 0,
 	HW_TYPE_PCIE,

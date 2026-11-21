@@ -138,7 +138,36 @@ sudo bash scripts/install.sh
 
 ## NetworkManager 自动连接与开机验证
 
-### 1. 连接并配置 MTU 1400 与省电关闭
+### 使用 SD_EMMC_B 修复接收卡住
+
+CM311-1a YST 从 eMMC 启动时，可将内置 Wi-Fi 改接 SD_EMMC_B，使用控制器的 DMA 传输，恢复 MTU `1500`。此配置将 SD_EMMC_B 专用于 Wi-Fi，会停用它原先连接的 SD 卡槽。驱动使用软件计算发送校验和，以避免持续传输时固件停止归还发送额度。
+
+先按本文安装同一内核版本的两个 Wi-Fi 模块。在源码目录使用同一套编译器和头文件编译引脚复用模块。生成设备树需要 `device-tree-compiler`。
+
+```bash
+sudo apt-get install --no-install-recommends device-tree-compiler
+release=$(uname -r)
+compiler=${CROSS_COMPILE:-"$PWD/.cache/toolchain/bin/aarch64-none-linux-gnu-"}
+mkdir -p build/cm311-sdio-route
+make -C "/lib/modules/$release/build" ARCH=arm64 CROSS_COMPILE="$compiler" \
+    KERNELRELEASE="$release" \
+    M="$PWD/packaging/cm311-sdio-route" MO="$PWD/build/cm311-sdio-route" modules
+sudo install -m 0644 build/cm311-sdio-route/cm311-sdio-route.ko \
+    "/lib/modules/$release/updates/cm311/"
+sudo depmod -a "$release"
+echo cm311_sdio_route | sudo tee /etc/modules-load.d/cm311-sdio-route.conf
+
+dtbs=/boot/dtb/amlogic
+sudo bash packaging/cm311-sdio-route/make-dtb.sh \
+    "$dtbs/meson-g12a-s905l3a-cm311.dtb" \
+    "$dtbs/meson-g12a-s905l3a-cm311-sd-emmc-b.dtb"
+```
+
+备份 `/boot/uEnv.txt`，将其中的 `FDT=` 改为 `FDT=/dtb/amlogic/meson-g12a-s905l3a-cm311-sd-emmc-b.dtb` 后重启。用 `readlink -f /sys/class/mmc_host/mmc0` 确认 Wi-Fi 已切到 `ffe05000.mmc`，并用 `ip link show wlan0` 确认 MTU 为 `1500`。为新内核重新编译 Wi-Fi 模块时，请一并编译并安装此引脚复用模块。
+
+要恢复 SD_EMMC_A，将 `FDT=` 改回原设备树，移除 `/etc/modules-load.d/cm311-sdio-route.conf`，将保存的 Wi-Fi MTU 配置改回 `1400`，然后重启。
+
+### 1. 连接并配置 MTU 与省电关闭
 
 首次连接 Wi-Fi 可使用：
 
@@ -146,7 +175,7 @@ sudo bash scripts/install.sh
 sudo nmcli --ask device wifi connect "你的SSID" ifname wlan0
 ```
 
-查看已保存连接的 UUID，并将该连接的 MTU 固定为 `1400`、关闭 802.11 省电（`powersave 2`）、开启自动连接：
+查看已保存连接的 UUID，关闭 802.11 省电（`powersave 2`）并开启自动连接。原设备树使用 MTU `1400`。已切换到 [SD_EMMC_B](#使用-sd_emmc_b-修复接收卡住) 的设备可将示例中的 MTU 改为 `1500`。
 
 ```bash
 nmcli -f NAME,UUID,TYPE,DEVICE connection show

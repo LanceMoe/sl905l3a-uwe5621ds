@@ -69,13 +69,19 @@ try_send:
 static int sdiohal_send(struct sdiohal_sendbuf_t *send_buf,
 	struct sdiohal_list_t *data_list)
 {
+	unsigned int length;
 	int ret = 0;
 
 	if ((!send_buf) || (!data_list))
 		return -EINVAL;
 
-	ret = sdiohal_sdio_pt_write(send_buf->buf,
-		SDIOHAL_ALIGN_BLK(send_buf->used_len));
+	length = SDIOHAL_ALIGN_BLK(send_buf->used_len);
+#ifdef CONFIG_MESON_UWE5621
+	/* A block write includes bytes after the current EOF header. */
+	memset(send_buf->buf + send_buf->used_len, 0,
+	       length - send_buf->used_len);
+#endif
+	ret = sdiohal_sdio_pt_write(send_buf->buf, length);
 	if (ret != 0) {
 		sdiohal_err("tyr send,type:%d subtype:%d node_num:%d\n",
 				data_list->type, data_list->subtype,

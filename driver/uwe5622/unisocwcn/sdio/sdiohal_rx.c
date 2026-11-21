@@ -6,6 +6,9 @@ static unsigned int sdiohal_rx_adapt_get(void)
 #ifdef CONFIG_MESON_UWE5621
     unsigned int limit = sdiohal_rx_packet_limit();
 
+    /* A frame can arrive after the firmware reported a small backlog. */
+    if (limit >= MAX_PAC_SIZE)
+        return clamp_t(unsigned int, p_data->dtbs, MAX_PAC_SIZE, limit);
     if (limit)
         return min(p_data->dtbs, limit);
 #endif

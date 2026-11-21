@@ -36,6 +36,7 @@ typedef uint8_t u8;
 #define BITS_PER_LONG 64
 #define PAGE_SIZE 4096
 #define MAX_PAC_SIZE 2048U
+#define clamp_t(type, value, low, high) ((type)(value) < (type)(low) ? (type)(low) : min_t(type, value, high))
 #define SDIOHAL_TX_SENDBUF_LEN 204800U
 #define SDIOHAL_RX_RECVBUF_LEN 204800U
 #define SDIOHAL_BLK_SIZE 512U
@@ -54,13 +55,14 @@ typedef uint8_t u8;
 static void fake_log(const char *format, ...) { (void)format; }
 #define pr_err_ratelimited(...) fake_log(__VA_ARGS__)
 #define sdiohal_debug(...) fake_log(__VA_ARGS__)
+#define sdiohal_err(...) fake_log(__VA_ARGS__)
 struct device_driver { const char *name; };
 struct device { struct device_driver *driver; };
 struct mmc_host { unsigned max_blk_count, max_req_size, max_seg_size, max_blk_size; struct device *parent; };
 struct mmc_card { struct mmc_host *host; unsigned quirks; struct { bool multi_block; } cccr; };
 struct sdio_func { struct mmc_card *card; unsigned cur_blksize, max_blksize, num; };
 struct mbuf_t { struct mbuf_t *next; unsigned char *buf; unsigned short len; };
-struct sdiohal_list_t { struct mbuf_t *mbuf_head, *mbuf_tail; unsigned node_num; };
+struct sdiohal_list_t { struct mbuf_t *mbuf_head, *mbuf_tail; unsigned node_num, type, subtype; };
 struct sdiohal_sendbuf_t { unsigned char *buf; unsigned used_len; };
 struct sdiohal_data_t {
     struct sdio_func *sdio_func[2];
@@ -92,6 +94,11 @@ static struct sdiohal_list_t *sdiohal_get_rx_mbuf_node(int n) {
 static int sdiohal_hwtype_to_channel(int inout, unsigned type, unsigned subtype) {
     (void)type; assert(!inout); return subtype + 12;
 }
+static void sdiohal_channel_to_hwtype(int inout, int channel, unsigned *type, unsigned *subtype) {
+    assert(inout == 1 && channel == 2);
+    *type = 0;
+    *subtype = 2;
+}
 static void sdiohal_print_list_data(int ch, struct sdiohal_list_t *list, const char *fn, int level) {
     (void)ch; (void)list; (void)fn; (void)level;
 }
@@ -119,20 +126,25 @@ static int mmc_io_rw_extended(struct mmc_card *c, int write, unsigned fn,
     }
     return 0;
 }
-static int sdiohal_send(struct sdiohal_sendbuf_t *buf, struct sdiohal_list_t *list) {
-    unsigned offset = 0, span, bytes = SDIOHAL_ALIGN_BLK(buf->used_len);
+static int sdiohal_sdio_pt_write(unsigned char *buf, unsigned bytes) {
+    unsigned offset = 0, span;
     struct sdio_puh_t *h;
-    (void)list;
     assert(bytes <= 1536 && bytes >= 512 && requests < 16);
     request_bytes[requests++] = bytes;
     for (;;) {
-        assert(offset + 4 <= buf->used_len);
-        h = (void *)(buf->buf + offset);
+        assert(offset + 4 <= bytes);
+        h = (void *)(buf + offset);
         if (h->eof) break;
         span = 4 + SDIOHAL_ALIGN_4BYTE(h->len);
         assert(offset + span <= bytes && h->len);
         offset += span; ++sent_packets;
     }
+    for (offset += sizeof(*h); offset < bytes; offset++)
+        assert(buf[offset] == 0);
+    return send_error;
+}
+static int sdiohal_send_try(struct sdiohal_sendbuf_t *buf) {
+    (void)buf;
     return send_error;
 }
 static int sdiohal_tx_list_denq(struct sdiohal_list_t *list) {
@@ -156,17 +168,25 @@ static int transmit(const unsigned *lengths, unsigned count, bool reclaim) {
     unsigned i;
     int ret;
     assert(count <= 8);
+    memset(sendbuf, 0xa5, sizeof(sendbuf));
     data.send_buf.buf = sendbuf;
     data.eof_buf = eof;
     ((struct sdio_puh_t *)eof)->eof = 1;
     for (i=0;i<count;i++) {
         nodes[i].len = lengths[i];
         nodes[i].buf = calloc(1,lengths[i]+8); assert(nodes[i].buf);
-        ((struct sdio_puh_t *)nodes[i].buf)->len = lengths[i];
+        memset(nodes[i].buf, 0xff, sizeof(struct sdio_puh_t));
         nodes[i].next = i+1<count ? &nodes[i+1] : NULL;
     }
     list.mbuf_head = count ? &nodes[0] : NULL;
     list.mbuf_tail = count ? &nodes[count-1] : NULL;
+    assert(sdiohal_tx_fill_puh(2, list.mbuf_head, list.mbuf_tail, count) == 0);
+    for (i = 0; i < count; i++) {
+        const struct sdio_puh_t *header = (void *)nodes[i].buf;
+
+        assert(header->len == lengths[i] && header->subtype == 2);
+        assert(!header->type && !header->eof && !header->pad && !header->check_sum);
+    }
     ret = sdiohal_meson_tx_send(&list,reclaim);
     assert(data.send_buf.used_len == 0);
     for (i=0;i<count;i++) free(nodes[i].buf);
@@ -184,7 +204,13 @@ int main(void) {
     host.max_req_size = host.max_seg_size = 4096; host.max_blk_count = 8;
     assert(sdiohal_packet_limit() == 1536 && sdiohal_rx_packet_limit() == 4096);
     driver.name = "meson-gx-mmc";
-    assert(sdiohal_rx_packet_limit() == 1536);
+    assert(sdiohal_packet_limit() == 4096 && sdiohal_rx_packet_limit() == 4096);
+    host.max_req_size = host.max_seg_size = 16384; host.max_blk_count = 32;
+    assert(sdiohal_packet_limit() == 16384 && sdiohal_rx_packet_limit() == 16384);
+    sdiohal_rx_adapt_set_dtbs(64);
+    assert(sdiohal_rx_adapt_get() == 2048);
+    sdiohal_rx_adapt_set_dtbs(3000);
+    assert(sdiohal_rx_adapt_get() == 3584);
     host.max_req_size = host.max_seg_size = 1536; host.max_blk_count = 3;
     host.max_seg_size = 1024; assert(sdiohal_packet_limit() == 1024);
     host.max_seg_size = 1536; host.max_req_size = 1024;
@@ -265,8 +291,9 @@ if __name__ == '__main__':
         'sdiohal_rx_adapt_get', 'sdiohal_rx_adapt_set_dtbs',
         'sdiohal_rx_dispatch_span', 'sdiohal_rx_buf_parser'))
     body += '\n' + '\n'.join(function(common, name) for name in (
-        'sdiohal_tx_packer', 'sdiohal_tx_set_eof'))
-    body += '\n' + function(tx, 'sdiohal_meson_tx_send')
+        'sdiohal_tx_packer', 'sdiohal_tx_set_eof', 'sdiohal_tx_fill_puh'))
+    body += '\n' + '\n'.join(function(tx, name) for name in (
+        'sdiohal_send', 'sdiohal_meson_tx_send'))
     with tempfile.TemporaryDirectory(prefix='cm311-sdio-packet-') as directory:
         src, binary = Path(directory) / 'test.c', Path(directory) / 'test'
         src.write_text(PRELUDE + '\n' + header + '\n' + STUBS + '\n' + kernel + '\n' + body + '\n' + MAIN)

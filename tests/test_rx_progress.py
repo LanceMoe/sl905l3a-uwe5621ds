@@ -43,6 +43,9 @@ static int sdiohal_rx_buf_parser(char *buf, unsigned valid, unsigned capacity) {
     ++parses; return parse_status;
 }
 struct net_device { unsigned mtu, max_mtu; };
+#define ETH_DATA_LEN 1500
+static unsigned packet_limit = 1536;
+static unsigned sdiohal_packet_limit(void) { return packet_limit; }
 '''
 
 MAIN = r'''
@@ -87,6 +90,9 @@ int main(void) {
     struct net_device dev = {1500,65535};
     sprdwl_meson_limit_mtu(&dev);
     assert(dev.mtu == 1400 && dev.max_mtu == 1400);
+    packet_limit = 4096;
+    sprdwl_meson_limit_mtu(&dev);
+    assert(dev.mtu == 1500 && dev.max_mtu == 1500);
     puts("PASS: no stale-trailer dispatch; zero-payload and productive loops bounded; experimental MTU capped");
     return 0;
 }
